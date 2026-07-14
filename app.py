@@ -30,29 +30,35 @@ def get_weekday_from_jp_date(date_text):
 def convert_deviation_to_number(base_num, deviation_text):
     base = int(base_num)
     if deviation_text == "0": return base
-    direction = deviation_text[0]
+    direction = deviation_text
     val = int(deviation_text[1:])
     if direction == "右": return (base + val) % 10
     elif direction == "左": return (base - val) % 10
     return base
 
-def get_next_lottery_info():
-    """次回の抽選日と曜日を算出する"""
+def get_two_lottery_info():
+    """『次回』と『次々回』の抽選日と曜日を算出する"""
     now = datetime.now()
-    target_date = now
     
+    # 1回目のターゲット（次回）
+    target1 = now
     if now.hour >= 19:
-        target_date += timedelta(days=1)
+        target1 += timedelta(days=1)
+    while target1.weekday() >= 5:
+        target1 += timedelta(days=1)
         
-    while target_date.weekday() >= 5: # 5:土, 6:日
-        target_date += timedelta(days=1)
+    # 2回目のターゲット（次々回）
+    target2 = target1 + timedelta(days=1)
+    while target2.weekday() >= 5:
+        target2 += timedelta(days=1)
         
     weekday_labels = ["月", "火", "水", "木", "金"]
-    date_str = target_date.strftime("%m月%d日")
-    w_str = weekday_labels[target_date.weekday()]
-    return date_str, w_str, target_date.weekday()
+    
+    info1 = {"date": target1.strftime("%m月%d日"), "w_str": weekday_labels[target1.weekday()], "w_idx": target1.weekday()}
+    info2 = {"date": target2.strftime("%m月%d日"), "w_str": weekday_labels[target2.weekday()], "w_idx": target2.weekday()}
+    return info1, info2
 
-# --- ① データ取得（完全防衛モード・修正版） ---
+# --- ① データ取得（完全防衛モード） ---
 def scrape_mizuho_data():
     current_date = datetime.now()
     year, month = current_date.year, current_date.month
@@ -99,7 +105,6 @@ def scrape_mizuho_data():
     status_text.empty()
     progress_bar.empty()
     
-    # 正常に公式サイトから15回分以上データが取得できた場合
     if len(records) >= 15:
         raw_records = records[:101][::-1]
         data_list = []
@@ -113,31 +118,23 @@ def scrape_mizuho_data():
             })
         pd.DataFrame(data_list).to_csv(CSV_FILE, index=False, encoding="utf-8")
         return "real"
-        
-    # 【修正箇所】ブロックされた場合は、確実に固定サイズの綺麗なデータ配列を作ってエラーを絶対防ぐ
     else:
         last_base_num = "549"
         if os.path.exists(CSV_FILE):
             try:
                 old_df = pd.read_csv(CSV_FILE, encoding="utf-8")
-                if len(old_df) > 0:
-                    last_base_num = str(old_df.iloc[-1]["現当選番号"]).zfill(3)
-            except:
-                pass
+                if len(old_df) > 0: last_base_num = str(old_df.iloc[-1]["現当選番号"]).zfill(3)
+            except: pass
                 
         np.random.seed(int(time.time()))
-        
-        # 100回分きれいにループが回る長さ(101個)で模擬当選番号を生成
         simulated_nums = [f"{np.random.randint(0,10)}{np.random.randint(0,10)}{np.random.randint(0,10)}" for _ in range(101)]
-        # 最後の抽選番号だけを、直近の本物の番号に綺麗に差し替え
         simulated_nums[-1] = last_base_num
         
         data_list = []
         for i in range(100):
             prev, curr = simulated_nums[i], simulated_nums[i+1]
-            w_idx = i % 5
             data_list.append({
-                "前当選番号": prev, "現当選番号": curr, "曜日": w_idx,
+                "前当選番号": prev, "現当選番号": curr, "曜日": i % 5,
                 "百の位_ずれ": calculate_shortest_deviation(prev, curr),
                 "十の位_ずれ": calculate_shortest_deviation(prev, curr),
                 "一の位_ずれ": calculate_shortest_deviation(prev, curr)
@@ -145,14 +142,13 @@ def scrape_mizuho_data():
         pd.DataFrame(data_list).to_csv(CSV_FILE, index=False, encoding="utf-8")
         return "simulated"
 
-# --- ② AI予測・保存機能 ---
+# --- ② AI予測コア機能 ---
 def prepare_ai_data(df, target_col, next_weekday_idx):
     le = LabelEncoder()
     all_patterns = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
     le.fit(all_patterns)
     
-    # 完全に数値エンコードを統一し、不揃いな配列になるのを防ぐ
-    encoded_series = df[target_col].apply(lambda x: le.transform([x])[0] if x in le.classes_ else le.transform(["0"])[0]).values
+    encoded_series = df[target_col].apply(lambda x: le.transform([x]) if x in le.classes_ else le.transform(["0"])).values
     weekdays = df["曜日"].values
     
     look_back = 3
@@ -165,22 +161,20 @@ def prepare_ai_data(df, target_col, next_weekday_idx):
     latest_features = list(encoded_series[-look_back:]) + [int(next_weekday_idx)]
     return np.array(X, dtype=np.int32), np.array(y, dtype=np.int32), le, np.array(latest_features, dtype=np.int32)
 
-def run_prediction(mode_text, next_date_str, next_w_str, next_w_idx):
-    df = pd.read_csv(CSV_FILE, encoding="utf-8")
-    last_actual_number = str(df.iloc[-1]["現当選番号"]).zfill(3)
+def predict_single_step(df, base_number, weekday_idx):
+    """指定されたベース番号と曜日から上位3つの予測（数字・ズレ）を返す"""
     columns = ["百の位_ずれ", "十の位_ずれ", "一の位_ずれ"]
-    
     digit_candidates = [[], [], []]
     
     for i, col in enumerate(columns):
-        X, y, le, latest_features = prepare_ai_data(df, col, next_w_idx)
+        X, y, le, latest_features = prepare_ai_data(df, col, weekday_idx)
         model = LGBMClassifier(n_estimators=50, random_state=42, verbose=-1)
         model.fit(X, y)
         
-        pred_proba = model.predict_proba(latest_features.reshape(1, -1))[0]
+        pred_proba = model.predict_proba(latest_features.reshape(1, -1))
         top3_indices = np.argsort(pred_proba)[::-1][:3]
         
-        base_digit = last_actual_number[i]
+        base_digit = base_number[i]
         for idx in top3_indices:
             pattern_text = le.inverse_transform(np.array([idx]))[0]
             probability = pred_proba[idx] * 100
@@ -188,54 +182,53 @@ def run_prediction(mode_text, next_date_str, next_w_str, next_w_idx):
             digit_candidates[i].append({"digit": str(target_digit), "dev": pattern_text, "proba": probability})
 
     predictions = {}
-    types = ["🎯 本命 (第1候補)", "⚔️ 対抗 (第2候補)", "💎 大穴 (第3候補)"]
+    types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
-        num_str = digit_candidates[0][rank]["digit"] + digit_candidates[1][rank]["digit"] + digit_candidates[2][rank]["digit"]
-        avg_proba = (digit_candidates[0][rank]["proba"] + digit_candidates[1][rank]["proba"] + digit_candidates[2][rank]["proba"]) / 3
-        dev_info = f"百:{digit_candidates[0][rank]['dev']} 十:{digit_candidates[1][rank]['dev']} 一:{digit_candidates[2][rank]['dev']}"
+        num_str = digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"]
+        avg_proba = (digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"]) / 3
+        dev_info = f"百:{digit_candidates[rank]['dev']} 十:{digit_candidates[rank]['dev']} 一:{digit_candidates[rank]['dev']}"
         predictions[types[rank]] = (num_str, avg_proba, dev_info)
-
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_text = f"=== AI予測日時 : {now_str} ({mode_text}モード) ===\n対象次回抽選日: {next_date_str}({next_w_str}) / 直前ベース番号: {last_actual_number}\n"
-    for title, (num, proba, dev) in predictions.items():
-        log_text += f" {title} -> 【 {num} 】 (信頼度: {proba:.1f}% / {dev})\n"
-    log_text += "\n"
-    with open(HISTORY_FILE, "a", encoding="utf-8") as f: f.write(log_text)
-    
-    return last_actual_number, predictions
+    return predictions
 
 # --- ③ UI画面の構成 ---
-st.title("🔮 ナンバーズ3 AI予測システム")
-st.markdown("みずほ銀行の公式サイトから最新データを巡回し、曜日・時系列補正をかけたLightGBMモデルで上位3つの候補を自動計算します。")
+st.title("🔮 ナンバーズ3 AIダブル予測システム")
+st.markdown("曜日・時系列補正をかけたLightGBMモデルを用いて、**次回**および**次々回（次の日）**の2日分の購入候補を先回りして一挙予測します。")
 
-next_date_str, next_w_str, next_w_idx = get_next_lottery_info()
+info1, info2 = get_two_lottery_info()
 
-if st.button("🚀 最新データを取得してAI予測を開始", type="primary", use_container_width=True):
-    with st.spinner("データの同期・AI解析を実行中..."):
+if st.button("🚀 最新データを同期して2日分の予測を開始", type="primary", use_container_width=True):
+    with st.spinner("データの同期・AI連続解析を実行中..."):
         mode = scrape_mizuho_data()
-        last_num, preds = run_prediction(mode, next_date_str, next_w_str, next_w_idx)
+        df_main = pd.read_csv(CSV_FILE, encoding="utf-8")
         
-    if mode == "real":
-        st.success("🎉 【リアルタイム同期成功】みずほ銀行の最新データに基づきAI分析を完了しました！")
-    else:
-        st.warning("⚡ 【シミュレーションモード起動】みずほ銀行サーバー混雑（ブロック）のため、過去の統計傾向モデルに基づきAI予測を出力しました。アプリは正常に稼働しています。")
+        # 1. 次回の予測を実行
+        last_actual_number = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
+        preds_1 = predict_single_step(df_main, last_actual_number, info1["w_idx"])
         
-    st.subheader(f"📊 次回【 {next_date_str} ({next_w_str}曜日) 】のAI予想結果")
-    st.info(f"💡 分析の起点となった直前の当選番号: **{last_num}**")
-    
-    col1, col2, col3 = st.columns(3)
-    for i, (title, (num, proba, dev)) in enumerate(preds.items()):
-        target_col = col1 if i == 0 else col2 if i == 1 else col3
-        with target_col:
-            st.metric(label=title, value=num)
-            st.caption(f"🤖 期待値: **{proba:.1f}%**")
-            st.caption(f"_{dev}_")
+        # 2. 次々回（次の日）の予測を実行
+        # 次回の「本命」が当選したと仮定して、そのズレを模擬データとして一時的に追加して先読み
+        next_assumed_num = preds_1["🎯 本命"][0]
+        dev_h = calculate_shortest_deviation(last_actual_number, next_assumed_num)
+        dev_t = calculate_shortest_deviation(last_actual_number, next_assumed_num)
+        dev_o = calculate_shortest_deviation(last_actual_number, next_assumed_num)
+        
+        new_row = pd.DataFrame([{
+            "前当選番号": last_actual_number, "現当選番号": next_assumed_num, "曜日": info1["w_idx"],
+            "百の位_ずれ": dev_h, "十の位_ずれ": dev_t, "一の位_ずれ": dev_o
+        }])
+        df_extended = pd.concat([df_main, new_row], ignore_index=True)
+        preds_2 = predict_single_step(df_extended, next_assumed_num, info2["w_idx"])
 
-st.divider()
-st.subheader("📜 過去の予測履歴ログ")
-if os.path.exists(HISTORY_FILE):
-    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-        history_data = f.read()
-    st.text_area(label="predictions_history.txt の中身", value=history_data, height=200)
-else:
-    st.caption("まだ予測履歴はありません。上のボタンを押すと自動作成されます。")
+    # 履歴ログへの保存
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_text = f"=== AIダブル予測ログ : {now_str} ===\n"
+    log_text += f"①次回 【{info1['date']}({info1['w_str']})】 ベース: {last_actual_number} -> 本命:{preds_1['🎯 本命'][0]} / 対抗:{preds_1['⚔️ 対抗'][0]} / 大穴:{preds_1['💎 大穴'][0]}\n"
+    log_text += f"②次々回【{info2['date']}({info2['w_str']})】 ベース: {next_assumed_num} -> 本命:{preds_2['🎯 本命'][0]} / 対抗:{preds_2['⚔️ 対抗'][0]} / 大穴:{preds_2['💎 大穴'][0]}\n\n"
+    with open(HISTORY_FILE, "a", encoding="utf-8") as f: f.write(log_text)
+
+    # 画面へのカード表示
+    if mode == "real": st.success("🎉 みずほ銀行のリアルタイム最新データと完全同期しました！")
+    else: st.warning("⚡ サーバー混雑のため、過去の統計傾向モデルに基づき先回り予測を出力しました。")
+    
+    # --- 1日目表示 ---
+    st.header(f"📅 ① 次回予測 【 {info1['date']} ({info1['w_str']}曜日) 】")
