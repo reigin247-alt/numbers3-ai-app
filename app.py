@@ -83,7 +83,7 @@ def scrape_mizuho_data():
     status_text.empty()
     progress_bar.empty()
     
-    # 正常に公式サイトから10回分以上データが取得できた場合
+    # 正常に公式サイトからデータが取得できた場合
     if len(records) >= 10:
         raw_records = records[:101][::-1]
         data_list = []
@@ -98,15 +98,14 @@ def scrape_mizuho_data():
         pd.DataFrame(data_list).to_csv(CSV_FILE, index=False, encoding="utf-8")
         return "real"
         
-    # 【修正箇所】ブロックされた場合は、すべてのズレパターン（右・左・0）を含む本物そっくりの模擬データベースを作る
+    # ブロックされた場合は、すべてのズレパターン（右・左・0）を含む本物そっくりの模擬データベースを作る
     else:
         np.random.seed(int(time.time()))
-        # ランダムな3桁の数字を105回分作成
         simulated_nums = [f"{np.random.randint(0,10)}{np.random.randint(0,10)}{np.random.randint(0,10)}" for _ in range(105)]
         data_list = []
         for i in range(101):
             prev, curr = simulated_nums[i], simulated_nums[i+1]
-            w_idx = i % 5 # 曜日代わり（0〜4）
+            w_idx = i % 5
             data_list.append({
                 "前当選番号": prev, "現当選番号": curr, "曜日": w_idx,
                 "百の位_ずれ": calculate_shortest_deviation(prev, curr),
@@ -119,7 +118,6 @@ def scrape_mizuho_data():
 # --- ② AI予測・保存機能 ---
 def prepare_ai_data(df, target_col):
     le = LabelEncoder()
-    # すべてのズレを完璧に学習できるように定義を固定
     all_patterns = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
     le.fit(all_patterns)
     
@@ -151,12 +149,14 @@ def run_prediction(mode_text):
         model = LGBMClassifier(n_estimators=50, random_state=42, verbose=-1)
         model.fit(X, y)
         
-        pred_proba = model.predict_proba(latest_features.reshape(1, -1))
+        pred_proba = model.predict_proba(latest_features.reshape(1, -1))[0]
+        # 確率が高い順にインデックスを並び替え
         top3_indices = np.argsort(pred_proba)[::-1][:3]
         
         base_digit = last_actual_number[i]
         for idx in top3_indices:
-            pattern_text = le.inverse_transform([idx])[0]
+            # 【修正箇所】numpyの一次元配列にしてからデコードを明示
+            pattern_text = le.inverse_transform(np.array([idx]))[0]
             probability = pred_proba[idx] * 100
             target_digit = convert_deviation_to_number(base_digit, pattern_text)
             digit_candidates[i].append({"digit": str(target_digit), "dev": pattern_text, "proba": probability})
