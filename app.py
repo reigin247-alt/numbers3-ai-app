@@ -30,7 +30,7 @@ def get_weekday_from_jp_date(date_text):
 def convert_deviation_to_number(base_num, deviation_text):
     base = int(base_num)
     if deviation_text == "0": return base
-    direction = deviation_text
+    direction = deviation_text[0]
     val = int(deviation_text[1:])
     if direction == "右": return (base + val) % 10
     elif direction == "左": return (base - val) % 10
@@ -41,7 +41,6 @@ def get_next_lottery_info():
     now = datetime.now()
     target_date = now
     
-    # 抽選は平日(月〜金)のみ。当日の19時以降（抽選後）であれば翌日以降の平日にターゲットを進める
     if now.hour >= 19:
         target_date += timedelta(days=1)
         
@@ -53,7 +52,7 @@ def get_next_lottery_info():
     w_str = weekday_labels[target_date.weekday()]
     return date_str, w_str, target_date.weekday()
 
-# --- ① データ取得（完全防衛モード搭載） ---
+# --- ① データ取得（完全防衛モード・修正版） ---
 def scrape_mizuho_data():
     current_date = datetime.now()
     year, month = current_date.year, current_date.month
@@ -100,8 +99,8 @@ def scrape_mizuho_data():
     status_text.empty()
     progress_bar.empty()
     
-    # 正常に公式サイトからデータが取得できた場合
-    if len(records) >= 10:
+    # 正常に公式サイトから15回分以上データが取得できた場合
+    if len(records) >= 15:
         raw_records = records[:101][::-1]
         data_list = []
         for i in range(len(raw_records) - 1):
@@ -115,9 +114,9 @@ def scrape_mizuho_data():
         pd.DataFrame(data_list).to_csv(CSV_FILE, index=False, encoding="utf-8")
         return "real"
         
-    # 【バグ修正箇所】ブロックされた場合は、前回の本物の数字を正しく配列の最後に組み込んで100回分のデータを作成
+    # 【修正箇所】ブロックされた場合は、確実に固定サイズの綺麗なデータ配列を作ってエラーを絶対防ぐ
     else:
-        last_base_num = "549" # 万が一の初期デフォルト値
+        last_base_num = "549"
         if os.path.exists(CSV_FILE):
             try:
                 old_df = pd.read_csv(CSV_FILE, encoding="utf-8")
@@ -127,12 +126,14 @@ def scrape_mizuho_data():
                 pass
                 
         np.random.seed(int(time.time()))
-        simulated_nums = [f"{np.random.randint(0,10)}{np.random.randint(0,10)}{np.random.randint(0,10)}" for _ in range(105)]
-        # リリストの最後の要素を、直近の本物の当選番号に固定（これで予測の起点が現実に一致します）
+        
+        # 100回分きれいにループが回る長さ(101個)で模擬当選番号を生成
+        simulated_nums = [f"{np.random.randint(0,10)}{np.random.randint(0,10)}{np.random.randint(0,10)}" for _ in range(101)]
+        # 最後の抽選番号だけを、直近の本物の番号に綺麗に差し替え
         simulated_nums[-1] = last_base_num
         
         data_list = []
-        for i in range(101):
+        for i in range(100):
             prev, curr = simulated_nums[i], simulated_nums[i+1]
             w_idx = i % 5
             data_list.append({
@@ -150,18 +151,19 @@ def prepare_ai_data(df, target_col, next_weekday_idx):
     all_patterns = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
     le.fit(all_patterns)
     
-    encoded_series = df[target_col].apply(lambda x: le.transform([x]) if x in le.classes_ else le.transform(["0"])).values
+    # 完全に数値エンコードを統一し、不揃いな配列になるのを防ぐ
+    encoded_series = df[target_col].apply(lambda x: le.transform([x])[0] if x in le.classes_ else le.transform(["0"])[0]).values
     weekdays = df["曜日"].values
     
     look_back = 3
     X, y = [], []
     for i in range(len(encoded_series) - look_back):
-        features = list(encoded_series[i : i + look_back]) + [weekdays[i + look_back]]
+        features = list(encoded_series[i : i + look_back]) + [int(weekdays[i + look_back])]
         X.append(features)
         y.append(encoded_series[i + look_back])
         
-    latest_features = list(encoded_series[-look_back:]) + [next_weekday_idx]
-    return np.array(X), np.array(y), le, np.array(latest_features)
+    latest_features = list(encoded_series[-look_back:]) + [int(next_weekday_idx)]
+    return np.array(X, dtype=np.int32), np.array(y, dtype=np.int32), le, np.array(latest_features, dtype=np.int32)
 
 def run_prediction(mode_text, next_date_str, next_w_str, next_w_idx):
     df = pd.read_csv(CSV_FILE, encoding="utf-8")
@@ -175,7 +177,7 @@ def run_prediction(mode_text, next_date_str, next_w_str, next_w_idx):
         model = LGBMClassifier(n_estimators=50, random_state=42, verbose=-1)
         model.fit(X, y)
         
-        pred_proba = model.predict_proba(latest_features.reshape(1, -1))
+        pred_proba = model.predict_proba(latest_features.reshape(1, -1))[0]
         top3_indices = np.argsort(pred_proba)[::-1][:3]
         
         base_digit = last_actual_number[i]
@@ -188,9 +190,9 @@ def run_prediction(mode_text, next_date_str, next_w_str, next_w_idx):
     predictions = {}
     types = ["🎯 本命 (第1候補)", "⚔️ 対抗 (第2候補)", "💎 大穴 (第3候補)"]
     for rank in range(3):
-        num_str = digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"]
-        avg_proba = (digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"]) / 3
-        dev_info = f"百:{digit_candidates[rank]['dev']} 十:{digit_candidates[rank]['dev']} 一:{digit_candidates[rank]['dev']}"
+        num_str = digit_candidates[0][rank]["digit"] + digit_candidates[1][rank]["digit"] + digit_candidates[2][rank]["digit"]
+        avg_proba = (digit_candidates[0][rank]["proba"] + digit_candidates[1][rank]["proba"] + digit_candidates[2][rank]["proba"]) / 3
+        dev_info = f"百:{digit_candidates[0][rank]['dev']} 十:{digit_candidates[1][rank]['dev']} 一:{digit_candidates[2][rank]['dev']}"
         predictions[types[rank]] = (num_str, avg_proba, dev_info)
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -206,7 +208,6 @@ def run_prediction(mode_text, next_date_str, next_w_str, next_w_idx):
 st.title("🔮 ナンバーズ3 AI予測システム")
 st.markdown("みずほ銀行の公式サイトから最新データを巡回し、曜日・時系列補正をかけたLightGBMモデルで上位3つの候補を自動計算します。")
 
-# 次回のターゲット抽選日情報を取得
 next_date_str, next_w_str, next_w_idx = get_next_lottery_info()
 
 if st.button("🚀 最新データを取得してAI予測を開始", type="primary", use_container_width=True):
