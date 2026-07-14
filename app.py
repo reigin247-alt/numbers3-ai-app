@@ -180,7 +180,7 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
             elif i == 1: tens_cand.append(item)
             elif i == 2: ones_cand.append(item)
 
-    # インデント位置のズレを完全に修正
+    # リストの0番目に本命、1番目に対抗、2番目に大穴を正確に格納
     h0, t0, o0 = hundreds_cand[0], tens_cand[0], ones_cand[0]
     h1, t1, o1 = hundreds_cand[1], tens_cand[1], ones_cand[1]
     h2, t2, o2 = hundreds_cand[2], tens_cand[2], ones_cand[2]
@@ -223,7 +223,7 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
         
-        # 完全に固定された辞書キーから安全に3桁数字を抽出
+        # 辞書から安全に本命数字を抽出
         st.session_state.next_num = st.session_state.preds1["本命"]["num"]
         
         # 2. 次々回（次の日）の予測を実行
@@ -238,6 +238,5 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
             
         st.session_state.calculated = True
 
-# --- 画面表示エリア（インデントエラーを完全消滅） ---
+# --- 画面表示エリア（インデントエラーを完全に解消） ---
 if st.session_state.calculated:
-    if st.session_state.mode == "real": 
