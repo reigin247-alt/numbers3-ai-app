@@ -71,7 +71,7 @@ def scrape_mizuho_data():
         for step in range(12):
             status_text.text(f"🌐 みずほ銀行公式HP: {year}年{month}月のデータを解析中...")
             progress_bar.progress(int((step + 1) / 12 * 100))
-            url = f"https://mizuhobank.co.jp{year}&month={month}"
+            url = f"https://www.mizuhobank.co.jp/takarakuji/check/numbers/numbers3/index.html?year={year}&month={month}"
             response = requests.get(url, headers=headers, timeout=5)
             response.encoding = 'shift_jis'
             
@@ -137,7 +137,7 @@ def scrape_mizuho_data():
         pd.DataFrame(data_list).to_csv(CSV_FILE, index=False, encoding="utf-8")
         return "simulated"
 
-# --- ② 堅牢なマルコフ連鎖確率計算エンジン（LightGBMを完全廃止） ---
+# --- ② 確率計算エンジン ---
 def predict_single_step_pure(df, base_number, next_weekday_idx):
     columns = ["百の位_ずれ", "十の位_ずれ", "一の位_ずれ"]
     digit_candidates = [[], [], []]
@@ -145,11 +145,8 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
     for i, col in enumerate(columns):
         series = df[col].astype(str).values.tolist()
         weekdays = df["曜日"].values.tolist()
-        
-        # 直近3回のパターンを取得
         last3 = series[-3:]
         
-        # 過去データから「直近3回と同じ流れ」の直後に発生したズレをカウント
         counts = {p: 0 for p in ALL_PATTERNS}
         total_matched = 0
         
@@ -160,7 +157,6 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
                     counts[next_val] += 1
                     total_matched += 1
                     
-        # マッチ数が少ない、または無い場合は「曜日別の出現頻度」に自動補正
         if total_matched < 2:
             for k in range(len(series)):
                 if int(weekdays[k]) == int(next_weekday_idx):
@@ -169,73 +165,67 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
                         counts[val] += 1
                         total_matched += 1
                         
-        # 確率（％）の計算
         probabilities = {}
         for p in ALL_PATTERNS:
             probabilities[p] = (counts[p] / total_matched if total_matched > 0 else 1.0 / 10.0)
             
-        # 確率が高い順にソートして上位3つを抽出
-        sorted_patterns = sorted(probabilities.items(), key=lambda x: x[1], reverse=True)[:3]
+        sorted_patterns = sorted(probabilities.items(), key=lambda x: x, reverse=True)[:3]
         
         base_digit = base_number[i]
         for pattern_text, proba_val in sorted_patterns:
             target_digit = convert_deviation_to_number(base_digit, pattern_text)
             digit_candidates[i].append({
-                "digit": str(target_digit),
-                "dev": pattern_text,
-                "proba": float(proba_val * 100)
+                "digit": str(target_digit), "dev": pattern_text, "proba": float(proba_val * 100)
             })
 
-    # 本命・対抗・大穴のパッキング
     predictions = {}
     types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
-        num_str = digit_candidates[0][rank]["digit"] + digit_candidates[1][rank]["digit"] + digit_candidates[2][rank]["digit"]
-        avg_proba = (digit_candidates[0][rank]["proba"] + digit_candidates[1][rank]["proba"] + digit_candidates[2][rank]["proba"]) / 3
-        dev_info = f"百:{digit_candidates[0][rank]['dev']} 十:{digit_candidates[1][rank]['dev']} 一:{digit_candidates[2][rank]['dev']}"
+        num_str = digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"]
+        avg_proba = (digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"]) / 3
+        dev_info = f"百:{digit_candidates[rank]['dev']} 十:{digit_candidates[rank]['dev']} 一:{digit_candidates[rank]['dev']}"
         predictions[types[rank]] = (num_str, avg_proba, dev_info)
-        
     return predictions
 
-# --- ③ UI画面の構成 ---
+# --- ③ UI画面の構成（セッション記憶システム対応） ---
 st.title("🔮 ナンバーズ3 AIダブル予測システム")
 st.markdown("曜日補正・時系列展開モデルを用いて、**次回**および**次々回（次の日）**の2日分の購入候補を一挙予測します。")
 
 info1, info2 = get_two_lottery_info()
 
+# アプリ起動時に記憶エリア（State）を初期化
+if "calculated" not in st.session_state:
+    st.session_state.calculated = False
+    st.session_state.mode = ""
+    st.session_state.last_num = ""
+    st.session_state.preds1 = None
+    st.session_state.preds2 = None
+    st.session_state.next_num = ""
+
+# ボタンを押した時の処理（記憶エリアへの書き込みだけを行う）
 if st.button("🚀 最新データを同期して2日分の予測を開始", type="primary", use_container_width=True):
     with st.spinner("統計確率モデルをロード・連続解析中..."):
-        mode = scrape_mizuho_data()
+        st.session_state.mode = scrape_mizuho_data()
         df_main = pd.read_csv(CSV_FILE, encoding="utf-8")
         
-        # 1. 次回の予測
-        last_actual_number = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
-        preds_1 = predict_single_step_pure(df_main, last_actual_number, info1["w_idx"])
+        st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
+        st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
         
-        # 2. 次々回（次の日）の予測
-        next_assumed_num = preds_1["🎯 本命"][0]
-        dev_h = calculate_shortest_deviation(last_actual_number, next_assumed_num)
-        dev_t = calculate_shortest_deviation(last_actual_number, next_assumed_num)
-        dev_o = calculate_shortest_deviation(last_actual_number, next_assumed_num)
+        st.session_state.next_num = st.session_state.preds1["🎯 本命"]
+        dev_h = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
+        dev_t = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
+        dev_o = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
         
         new_row = pd.DataFrame([{
-            "前当選番号": last_actual_number, "現当選番号": next_assumed_num, "曜日": info1["w_idx"],
+            "前当選番号": st.session_state.last_num, "現当選番号": st.session_state.next_num, "曜日": info1["w_idx"],
             "百の位_ずれ": dev_h, "十の位_ずれ": dev_t, "一の位_ずれ": dev_o
         }])
         df_extended = pd.concat([df_main, new_row], ignore_index=True)
-        preds_2 = predict_single_step_pure(df_extended, next_assumed_num, info2["w_idx"])
-
-    # 履歴ログ保存（安全ブロック付き）
-    try:
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_text = f"=== AIダブル予測ログ : {now_str} ===\n"
-        log_text += f"①次回 【{info1['date']}({info1['w_str']})】 ベース: {last_actual_number} -> 本命:{preds_1['🎯 本命'][0]} / 対抗:{preds_1['⚔️ 対抗'][0]} / 大穴:{preds_1['💎 大穴'][0]}\n"
-        log_text += f"②次々回【{info2['date']}({info2['w_str']})】 ベース: {next_assumed_num} -> 本命:{preds_2['🎯 本命'][0]} / 対抗:{preds_2['⚔️ 対抗'][0]} / 大穴:{preds_2['💎 大穴'][0]}\n\n"
-        with open(HISTORY_FILE, "a", encoding="utf-8") as f: f.write(log_text)
-    except:
-        pass
-
-    # 結果カード表示
-    if mode == "real": st.success("🎉 みずほ銀行のリアルタイム最新データと完全同期しました！")
-    else: st.warning("⚡ サーバー混雑のため、過去の統計傾向モデルに基づき先回り予測を出力しました。")
-    
+        st.session_state.preds2 = predict_single_step_pure(df_extended, st.session_state.next_num, info2["w_idx"])
+        
+        # 履歴ログ保存
+        try:
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_text = f"=== AIダブル予測ログ : {now_str} ===\n"
+            log_text += f"①次回 【{info1['date']}】 ベース: {st.session_state.last_num} -> 本命:{st.session_state.preds1['🎯 本命']} / 対抗:{st.session_state.preds1['⚔️ 対抗']} / 大穴:{st.session_state.preds1['💎 大穴']}\n"
+            log_text += f"②次々回【{info2['date']}】 ベース: {st.session_state.next_num} -> 本命:{st.session_state.preds2['🎯 本命']} / 対抗:{st.session_state.preds2['⚔️ 对抗']} / 大穴:{st.session_state.preds2['💎 大穴']}\n\n"
