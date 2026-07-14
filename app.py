@@ -40,14 +40,12 @@ def get_two_lottery_info():
     """『次回』と『次々回』の抽選日と曜日を算出する"""
     now = datetime.now()
     
-    # 1回目のターゲット（次回）
     target1 = now
     if now.hour >= 19:
         target1 += timedelta(days=1)
     while target1.weekday() >= 5:
         target1 += timedelta(days=1)
         
-    # 2回目のターゲット（次々回）
     target2 = target1 + timedelta(days=1)
     while target2.weekday() >= 5:
         target2 += timedelta(days=1)
@@ -148,21 +146,30 @@ def prepare_ai_data(df, target_col, next_weekday_idx):
     all_patterns = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
     le.fit(all_patterns)
     
-    encoded_series = df[target_col].apply(lambda x: le.transform([x]) if x in le.classes_ else le.transform(["0"])).values
+    # 完全に1つの値（スカラー）にするためにリスト内包表記で確実に変換
+    raw_series = df[target_col].values
+    encoded_list = []
+    for val in raw_series:
+        if val in le.classes_:
+            encoded_list.append(int(le.transform([val])[0]))
+        else:
+            encoded_list.append(int(le.transform(["0"])[0]))
+            
     weekdays = df["曜日"].values
     
     look_back = 3
     X, y = [], []
-    for i in range(len(encoded_series) - look_back):
-        features = list(encoded_series[i : i + look_back]) + [int(weekdays[i + look_back])]
+    for i in range(len(encoded_list) - look_back):
+        features = [int(encoded_list[i]), int(encoded_list[i+1]), int(encoded_list[i+2]), int(weekdays[i+3])]
         X.append(features)
-        y.append(encoded_series[i + look_back])
+        y.append(int(encoded_list[i+3]))
         
-    latest_features = list(encoded_series[-look_back:]) + [int(next_weekday_idx)]
+    latest_features = [int(encoded_list[-3]), int(encoded_list[-2]), int(encoded_list[-1]), int(next_weekday_idx)]
+    
+    # 【対策箇所】NumPyの配列作成時に型と形状を完全に揃えて生成
     return np.array(X, dtype=np.int32), np.array(y, dtype=np.int32), le, np.array(latest_features, dtype=np.int32)
 
 def predict_single_step(df, base_number, weekday_idx):
-    """指定されたベース番号と曜日から上位3つの予測（数字・ズレ）を返す"""
     columns = ["百の位_ずれ", "十の位_ずれ", "一の位_ずれ"]
     digit_candidates = [[], [], []]
     
@@ -171,18 +178,22 @@ def predict_single_step(df, base_number, weekday_idx):
         model = LGBMClassifier(n_estimators=50, random_state=42, verbose=-1)
         model.fit(X, y)
         
-        pred_proba = model.predict_proba(latest_features.reshape(1, -1))
-        top3_indices = np.argsort(pred_proba)[::-1][:3]
+        pred_proba = model.predict_proba(latest_features.reshape(1, -1))[0]
+        # クラスラベルに応じた正確な上位3つを取得
+        top3_classes_indices = np.argsort(pred_proba)[::-1][:3]
         
         base_digit = base_number[i]
-        for idx in top3_indices:
-            pattern_text = le.inverse_transform(np.array([idx]))[0]
-            probability = pred_proba[idx] * 100
+        for idx_in_proba in top3_classes_indices:
+            # 予測されたクラスのインデックスから、実際の文字列（右2など）にデコード
+            actual_class_index = model.classes_[idx_in_proba]
+            pattern_text = le.inverse_transform(np.array([actual_class_index]))[0]
+            probability = pred_proba[idx_in_proba] * 100
+            
             target_digit = convert_deviation_to_number(base_digit, pattern_text)
             digit_candidates[i].append({"digit": str(target_digit), "dev": pattern_text, "proba": probability})
 
     predictions = {}
-    types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
+    types = ["🎯 本命", "⚔️ 对抗", "💎 大穴"]
     for rank in range(3):
         num_str = digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"]
         avg_proba = (digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"]) / 3
@@ -206,7 +217,6 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         preds_1 = predict_single_step(df_main, last_actual_number, info1["w_idx"])
         
         # 2. 次々回（次の日）の予測を実行
-        # 次回の「本命」が当選したと仮定して、そのズレを模擬データとして一時的に追加して先読み
         next_assumed_num = preds_1["🎯 本命"][0]
         dev_h = calculate_shortest_deviation(last_actual_number, next_assumed_num)
         dev_t = calculate_shortest_deviation(last_actual_number, next_assumed_num)
@@ -222,13 +232,4 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
     # 履歴ログへの保存
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_text = f"=== AIダブル予測ログ : {now_str} ===\n"
-    log_text += f"①次回 【{info1['date']}({info1['w_str']})】 ベース: {last_actual_number} -> 本命:{preds_1['🎯 本命'][0]} / 対抗:{preds_1['⚔️ 対抗'][0]} / 大穴:{preds_1['💎 大穴'][0]}\n"
-    log_text += f"②次々回【{info2['date']}({info2['w_str']})】 ベース: {next_assumed_num} -> 本命:{preds_2['🎯 本命'][0]} / 対抗:{preds_2['⚔️ 対抗'][0]} / 大穴:{preds_2['💎 大穴'][0]}\n\n"
-    with open(HISTORY_FILE, "a", encoding="utf-8") as f: f.write(log_text)
-
-    # 画面へのカード表示
-    if mode == "real": st.success("🎉 みずほ銀行のリアルタイム最新データと完全同期しました！")
-    else: st.warning("⚡ サーバー混雑のため、過去の統計傾向モデルに基づき先回り予測を出力しました。")
-    
-    # --- 1日目表示 ---
-    st.header(f"📅 ① 次回予測 【 {info1['date']} ({info1['w_str']}曜日) 】")
+    log_text += f"①次回 【{info1['date']}({info1['w_str']})】 ベース: {last_actual_number} -> 本命:{preds_1['🎯 本命'][0]} / 対抗:{preds_1['⚔️ 对抗'][0]} / 大穴:{preds_1['💎 大穴'][0]}\n"
