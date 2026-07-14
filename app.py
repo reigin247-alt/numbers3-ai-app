@@ -221,10 +221,11 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         df_extended = pd.concat([df_main, new_row], ignore_index=True)
         st.session_state.preds2 = predict_single_step_pure(df_extended, st.session_state.next_num, info2["w_idx"])
         
-        # 【ズレを完全に修正】履歴ログ保存処理
+        # 【インデントバグを完全に修正】1行で安全にログを追記する設計に変更
         try:
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_text = f"=== AIダブル予測ログ : {now_str} ===\n"
-            log_text += f"①次回 【{info1['date']}】 ベース: {st.session_state.last_num} -> 本命:{st.session_state.preds1['🎯 本命']} / 対抗:{st.session_state.preds1['⚔️ 対抗']} / 大穴:{st.session_state.preds1['💎 大穴']}\n"
-            log_text += f"②次々回【{info2['date']}】 ベース: {st.session_state.next_num} -> 本命:{st.session_state.preds2['🎯 本命']} / 対抗:{st.session_state.preds2['⚔️ 対抗']} / 大穴:{st.session_state.preds2['💎 大穴']}\n\n"
-            with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+            log_text = f"=== AIダブル予測ログ : {now_str} ===\n①次回 【{info1['date']}】 ベース: {st.session_state.last_num} -> 本命:{st.session_state.preds1['🎯 本命']} / 対抗:{st.session_state.preds1['⚔️ 対抗']} / 大穴:{st.session_state.preds1['💎 大穴']}\n②次々回【{info2['date']}】 ベース: {st.session_state.next_num} -> 本命:{st.session_state.preds2['🎯 本命']} / 対抗:{st.session_state.preds2['⚔️ 対抗']} / 大穴:{st.session_state.preds2['💎 大穴']}\n\n"
+            open(HISTORY_FILE, "a", encoding="utf-8").write(log_text)
+        except:
+            pass
+            
