@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from lightgbm import LGBMClassifier
-from sklearn.preprocessing import LabelEncoder
 import os
 import time
 from datetime import datetime, timedelta
@@ -13,6 +12,13 @@ CSV_FILE = "numbers3_directional_deviation.csv"
 HISTORY_FILE = "predictions_history.txt"
 
 st.set_page_config(page_title="ナンバーズ3 AI予測アプリ", page_icon="🔮", layout="centered")
+
+# --- 【超重要】型エラーを防ぐための固定マッピング定義 ---
+ALL_PATTERNS = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
+# 文字 -> 数値 (0〜9) の辞書
+PATTERN_TO_INT = {p: i for i, p in enumerate(ALL_PATTERNS)}
+# 数値 (0〜9) -> 文字 の辞書
+INT_TO_PATTERN = {i: p for i, p in enumerate(ALL_PATTERNS)}
 
 def calculate_shortest_deviation(prev_num, curr_num):
     p, c = int(prev_num), int(curr_num)
@@ -30,7 +36,7 @@ def get_weekday_from_jp_date(date_text):
 def convert_deviation_to_number(base_num, deviation_text):
     base = int(base_num)
     if deviation_text == "0": return base
-    direction = deviation_text
+    direction = deviation_text[0]
     val = int(deviation_text[1:])
     if direction == "右": return (base + val) % 10
     elif direction == "左": return (base - val) % 10
@@ -142,14 +148,10 @@ def scrape_mizuho_data():
 
 # --- ② AI予測コア機能 ---
 def prepare_ai_data(df, target_col, next_weekday_idx):
-    le = LabelEncoder()
-    all_patterns = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
-    le.fit(all_patterns)
-    
     raw_series = df[target_col].astype(str).values
-    cleaned_series = [val if val in le.classes_ else "0" for val in raw_series]
-    encoded_list = le.transform(cleaned_series).tolist()
-            
+    
+    # 辞書を使って一発で安全に数値にマッピング（LabelEncoderを廃止）
+    encoded_list = [PATTERN_TO_INT[val] if val in PATTERN_TO_INT else PATTERN_TO_INT["0"] for val in raw_series]
     weekdays = df["曜日"].values
     
     look_back = 3
@@ -160,31 +162,42 @@ def prepare_ai_data(df, target_col, next_weekday_idx):
         y.append(int(encoded_list[i+3]))
         
     latest_features = [int(encoded_list[-3]), int(encoded_list[-2]), int(encoded_list[-1]), int(next_weekday_idx)]
-    return np.array(X, dtype=np.int32), np.array(y, dtype=np.int32), le, np.array(latest_features, dtype=np.int32)
+    return np.array(X, dtype=np.int32), np.array(y, dtype=np.int32), latest_features
 
 def predict_single_step(df, base_number, weekday_idx):
     columns = ["百の位_ずれ", "十の位_ずれ", "一の位_ずれ"]
     digit_candidates = [[], [], []]
     
     for i, col in enumerate(columns):
-        X, y, le, latest_features = prepare_ai_data(df, col, weekday_idx)
+        X, y, latest_features = prepare_ai_data(df, col, weekday_idx)
         model = LGBMClassifier(n_estimators=50, random_state=42, verbose=-1)
         model.fit(X, y)
         
-        pred_proba = model.predict_proba(latest_features.reshape(1, -1))
-        top3_classes_indices = np.argsort(pred_proba)[::-1][:3]
+        # 予測確率を取得
+        pred_proba = model.predict_proba(np.array([latest_features], dtype=np.int32))[0]
+        
+        # モデルが実際に出力可能なクラス（0〜9の数値のリスト）
+        available_classes = model.classes_
+        
+        # 確率が高い順に、利用可能なクラスの「インデックス」を取得
+        sorted_proba_indices = np.argsort(pred_proba)[::-1]
         
         base_digit = base_number[i]
-        for idx_in_proba in top3_classes_indices:
-            actual_class_index = model.classes_[idx_in_proba]
-            # 【修正箇所】デコード後に[0]をとり、文字型のみを確実に抽出
-            pattern_text = str(le.inverse_transform(np.array([actual_class_index]))[0])
-            probability = pred_proba[idx_in_proba] * 100
+        
+        # 上位3つの候補を抽出
+        count = 0
+        for p_idx in sorted_proba_indices:
+            if count >= 3: break
+            
+            actual_class_int = int(available_classes[p_idx])
+            # 辞書から直接「左3」などの文字列を復元（バグの原因を根絶）
+            pattern_text = INT_TO_PATTERN[actual_class_int]
+            probability = float(pred_proba[p_idx] * 100)
             
             target_digit = convert_deviation_to_number(base_digit, pattern_text)
             digit_candidates[i].append({"digit": str(target_digit), "dev": pattern_text, "proba": probability})
+            count += 1
 
-    # 各桁の該当順位の情報を綺麗に結合
     predictions = {}
     types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
@@ -222,7 +235,7 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         preds_1 = predict_single_step(df_main, last_actual_number, info1["w_idx"])
         
         # 2. 次々回（次の日）の予測を実行
-        next_assumed_num = preds_1["🎯 本命"][0] # 文字列として取得
+        next_assumed_num = preds_1["🎯 本命"][0] # 文字列の取得を確実に
         dev_h = calculate_shortest_deviation(last_actual_number, next_assumed_num)
         dev_t = calculate_shortest_deviation(last_actual_number, next_assumed_num)
         dev_o = calculate_shortest_deviation(last_actual_number, next_assumed_num)
@@ -236,5 +249,3 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
 
     # 履歴ログへの保存
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_text = f"=== AIダブル予測ログ : {now_str} ===\n"
-    log_text += f"①次回 【{info1['date']}({info1['w_str']})】 ベース: {last_actual_number} -> 本命:{preds_1['🎯 本命'][0]} / 対抗:{preds_1['⚔️ 対抗'][0]} / 大穴:{preds_1['💎 大穴'][0]}\n"
