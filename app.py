@@ -180,7 +180,7 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
             elif i == 1: tens_cand.append(item)
             elif i == 2: ones_cand.append(item)
 
-    # データを完全に安全な配列として抽出し、文字バグを根絶
+    # リスト形式で本命・対抗・大穴をパッキング
     predictions = []
     for rank in range(3):
         h = hundreds_cand[rank]
@@ -227,7 +227,7 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
         
-        # 0番目(本命)の「num」キーから綺麗な3桁の数字を抜き出す
+        # 【完全修正箇所】リストの0番目(本命)の中の「num」キーを安全に指定して引き出す
         st.session_state.next_num = st.session_state.preds1[0]["num"]
         
         # 2. 次々回（次の日）の予測を実行
@@ -242,7 +242,7 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
             
         st.session_state.calculated = True
 
-# --- 画面表示エリア（縦並びレイアウトに変更） ---
+# --- 画面表示エリア ---
 if st.session_state.calculated:
     if st.session_state.mode == "real": 
         st.success("🎉 みずほ銀行のリアルタイム最新データと完全同期しました！")
