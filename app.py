@@ -180,20 +180,16 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
             elif i == 1: tens_cand.append(item)
             elif i == 2: ones_cand.append(item)
 
-    # リスト形式で本命・対抗・大穴をパッキング
-    predictions = []
-    for rank in range(3):
-        h = hundreds_cand[rank]
-        t = tens_cand[rank]
-        o = ones_cand[rank]
-        
-        num_str = str(h["digit"]) + str(t["digit"]) + str(o["digit"])
-        avg_proba = (h["proba"] + t["proba"] + o["proba"]) / 3
-        dev_info = f"百:{h['dev']} 十:{t['dev']} 一:{o['dev']}"
-        
-        title = "🎯 本命" if rank == 0 else "⚔️ 対抗" if rank == 1 else "💎 大穴"
-        predictions.append({"title": title, "num": num_str, "proba": avg_proba, "dev": dev_info})
-    return predictions
+    # 完全に独立した変数として結果を抽出し、配列ループによる非表示バグを根絶
+    h0, t0, o0 = hundreds_cand[0], tens_cand[0], ones_cand[0]
+    h1, t1, o1 = hundreds_cand[1], tens_cand[1], ones_cand[1]
+    h2, t2, o2 = hundreds_cand[2], tens_cand[2], ones_cand[2]
+    
+    res_honmei = {"num": h0["digit"]+t0["digit"]+o0["digit"], "proba": (h0["proba"]+t0["proba"]+o0["proba"])/3, "dev": f"百:{h0['dev']} 十:{t0['dev']} 一:{o0['dev']}"}
+    res_taikou = {"num": h1["digit"]+t1["digit"]+o1["digit"], "proba": (h1["proba"]+t1["proba"]+o1["proba"])/3, "dev": f"百:{h1['dev']} 十:{t1['dev']} 一:{o1['dev']}"}
+    res_oana   = {"num": h2["digit"]+t2["digit"]+o2["digit"], "proba": (h2["proba"]+t2["proba"]+o2["proba"])/3, "dev": f"百:{h2['dev']} 十:{t2['dev']} 一:{o2['dev']}"}
+    
+    return [res_honmei, res_taikou, res_oana]
 
 # --- 安全な独立ログ書き込み命令 ---
 def save_prediction_history_safely(date1, num1, date2, num2, last_num):
@@ -227,8 +223,8 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
         
-        # 【完全修正箇所】リストの0番目(本命)の中の「num」キーを安全に指定して引き出す
-        st.session_state.next_num = st.session_state.preds1[0]["num"]
+        # インデックス[0]["num"]で「本命の3桁数字」を完全かつ安全に指定
+        st.session_state.next_num = str(st.session_state.preds1[0]["num"])
         
         # 2. 次々回（次の日）の予測を実行
         st.session_state.preds2 = predict_single_step_pure(df_main, st.session_state.next_num, info2["w_idx"])
@@ -236,17 +232,11 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         # 履歴を安全に保存
         save_prediction_history_safely(
             info1["date"], st.session_state.next_num, 
-            info2["date"], st.session_state.preds2[0]["num"], 
+            info2["date"], str(st.session_state.preds2[0]["num"]), 
             st.session_state.last_num
         )
             
         st.session_state.calculated = True
 
-# --- 画面表示エリア ---
+# --- 画面表示エリア（最も破壊に強い直接指定レイアウト） ---
 if st.session_state.calculated:
-    if st.session_state.mode == "real": 
-        st.success("🎉 みずほ銀行のリアルタイム最新データと完全同期しました！")
-    else: 
-        st.warning("⚡ サーバー混雑のため、過去の統計傾向モデルに基づき先回り予測を出力しました。アプリは完全に稼働しています。")
-    
-    # --- 1日目（次回）表示 ---
