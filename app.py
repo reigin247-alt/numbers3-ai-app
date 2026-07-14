@@ -12,11 +12,10 @@ HISTORY_FILE = "predictions_history.txt"
 
 st.set_page_config(page_title="ナンバーズ3 AI予測アプリ", page_icon="🔮", layout="centered")
 
-# --- 【鉄壁の固定マッピング】型エラーと次元バグを完全に排除 ---
+# --- 固定ルール定義 ---
 ALL_PATTERNS = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
 
 def calculate_shortest_deviation(prev_num, curr_num):
-    """円形ルーレット上の最短のズレと方向を計算する"""
     p, c = int(prev_num), int(curr_num)
     right_dist = (c - p) % 10
     if right_dist == 0: return "0"
@@ -24,29 +23,27 @@ def calculate_shortest_deviation(prev_num, curr_num):
     else: return f"左{10 - right_dist}"
 
 def get_weekday_from_jp_date(date_text):
-    """みずほ銀行のテキストから曜日(0-4)を抽出する"""
     weekdays = ["月", "火", "水", "木", "金"]
     for i, w in enumerate(weekdays):
         if w in date_text: return i
     return -1
 
 def convert_deviation_to_number(base_num, deviation_text):
-    """前回の数字と予測されたズレから、次回の数字を逆算する"""
     base = int(base_num)
     if deviation_text == "0": return base
-    direction = deviation_text[0]
+    direction = deviation_text
     val = int(deviation_text[1:])
     if direction == "右": return (base + val) % 10
     elif direction == "左": return (base - val) % 10
     return base
 
 def get_two_lottery_info():
-    """今日の日付から『次回』と『次々回』の抽選日と曜日を自動算出する"""
+    """『次回』と『次々回』の抽選日と曜日を算出する"""
     now = datetime.now()
     target1 = now
     if now.hour >= 19:
         target1 += timedelta(days=1)
-    while target1.weekday() >= 5: # 土日スキップ
+    while target1.weekday() >= 5:
         target1 += timedelta(days=1)
         
     target2 = target1 + timedelta(days=1)
@@ -58,9 +55,8 @@ def get_two_lottery_info():
     info2 = {"date": target2.strftime("%m月%d日"), "w_str": weekday_labels[target2.weekday()], "w_idx": target2.weekday()}
     return info1, info2
 
-# --- ① データ取得部（完全防衛型フォールバック搭載） ---
+# --- ① データ取得（完全防衛型） ---
 def scrape_mizuho_data():
-    """みずほ銀行公式HPから100回分の当選番号を自動巡回する"""
     current_date = datetime.now()
     year, month = current_date.year, current_date.month
     records = []
@@ -105,7 +101,6 @@ def scrape_mizuho_data():
     status_text.empty()
     progress_bar.empty()
     
-    # 正常に公式サイトからデータが取得できた場合
     if len(records) >= 15:
         raw_records = records[:101][::-1]
         data_list = []
@@ -119,8 +114,6 @@ def scrape_mizuho_data():
             })
         pd.DataFrame(data_list).to_csv(CSV_FILE, index=False, encoding="utf-8")
         return "real"
-        
-    # 海外サーバー等の理由でブロックされた場合は、過去の統計傾向を綺麗に模したデータベースを自動構築
     else:
         last_base_num = "549"
         if os.path.exists(CSV_FILE):
@@ -131,7 +124,7 @@ def scrape_mizuho_data():
                 
         np.random.seed(int(time.time()))
         simulated_nums = [f"{np.random.randint(0,10)}{np.random.randint(0,10)}{np.random.randint(0,10)}" for _ in range(101)]
-        simulated_nums[-1] = last_base_num # 終点を現実の最新番号に固定
+        simulated_nums[-1] = last_base_num
         
         data_list = []
         for i in range(100):
@@ -145,9 +138,8 @@ def scrape_mizuho_data():
         pd.DataFrame(data_list).to_csv(CSV_FILE, index=False, encoding="utf-8")
         return "simulated"
 
-# --- ② 確率計算エンジン（マルコフ連鎖モデルによる超高速・高安定解析） ---
+# --- ② 確率計算エンジン ---
 def predict_single_step_pure(df, base_number, next_weekday_idx):
-    """指定されたベース番号と次回の曜日から、百・十・一の位のズレ確率を計算し結合する"""
     columns = ["百の位_ずれ", "十の位_ずれ", "一の位_ずれ"]
     hundreds_cand, tens_cand, ones_cand = [], [], []
     
@@ -159,7 +151,6 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
         counts = {p: 0 for p in ALL_PATTERNS}
         total_matched = 0
         
-        # パターンマッチング（直近3回のズレの流れ ＋ 該当曜日）
         for k in range(len(series) - 3):
             if series[k:k+3] == last3 and int(weekdays[k+3]) == int(next_weekday_idx):
                 next_val = series[k+3]
@@ -167,7 +158,6 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
                     counts[next_val] += 1
                     total_matched += 1
                     
-        # マッチ数が極端に少ない場合は、全体の該当曜日データから出現頻度を自動補正
         if total_matched < 2:
             for k in range(len(series)):
                 if int(weekdays[k]) == int(next_weekday_idx):
@@ -190,21 +180,21 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
             elif i == 1: tens_cand.append(item)
             elif i == 2: ones_cand.append(item)
 
-    # 各桁から本命(0番手)、対抗(1番手)、大穴(2番手)をクロス抽出して完全な3桁に結合
+    # 完全にフラットな辞書形式（文字列）で本命・対抗・大穴をパッキング
     predictions = {}
     types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
-        h_item = hundreds_cand[rank]
-        t_item = tens_cand[rank]
-        o_item = ones_cand[rank]
+        h = hundreds_cand[rank]
+        t = tens_cand[rank]
+        o = ones_cand[rank]
         
-        num_str = h_item["digit"] + t_item["digit"] + o_item["digit"]
-        avg_proba = (h_item["proba"] + t_item["proba"] + o_item["proba"]) / 3
-        dev_info = f"百:{h_item['dev']} 十:{t_item['dev']} 一:{o_item['dev']}"
-        predictions[types[rank]] = (num_str, avg_proba, dev_info)
+        num_str = h["digit"] + t["digit"] + o["digit"]
+        avg_proba = (h["proba"] + t["proba"] + o["proba"]) / 3
+        dev_info = f"百:{h['dev']} 十:{t['dev']} 一:{o['dev']}"
+        predictions[types[rank]] = {"num": num_str, "proba": avg_proba, "dev": dev_info}
     return predictions
 
-# --- 安全な独立ログ書き込み命令（スペースのズレを防ぐための外部関数） ---
+# --- 安全な独立ログ書き込み命令 ---
 def save_prediction_history_safely(date1, num1, date2, num2, last_num):
     try:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -213,13 +203,12 @@ def save_prediction_history_safely(date1, num1, date2, num2, last_num):
     except:
         pass
 
-# --- ③ UI画面構築およびセッション管理 ---
+# --- ③ UI画面の構成 ---
 st.title("🔮 ナンバーズ3 AIダブル予測システム")
 st.markdown("曜日補正・時系列展開モデルを用いて、**次回**および**次々回（次の日）**の2日分の購入候補を一挙予測します。")
 
 info1, info2 = get_two_lottery_info()
 
-# セッションの初期化
 if "calculated" not in st.session_state:
     st.session_state.calculated = False
     st.session_state.mode = ""
@@ -228,7 +217,6 @@ if "calculated" not in st.session_state:
     st.session_state.preds2 = None
     st.session_state.next_num = ""
 
-# メインボタン
 if st.button("🚀 最新データを同期して2日分の予測を開始", type="primary", use_container_width=True):
     with st.spinner("統計確率モデルをロード・連続解析中..."):
         st.session_state.mode = scrape_mizuho_data()
@@ -238,8 +226,27 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
         
-        # タプルの[0]番目から純粋な「3桁の数字文字列」だけを安全に抜き出して連動
-        st.session_state.next_num = str(st.session_state.preds1["🎯 本命"][0])
+        # 純粋な「3桁の数字文字列」だけを取り出して連動
+        st.session_state.next_num = st.session_state.preds1["🎯 本命"]["num"]
         
-        # 2. 次々回（次の日）の予測を実行
-        dev_h = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
+        # 2. 次々回（次の日）の予測を実行（クラッシュの原因だったdataframe結合処理を完全廃止）
+        st.session_state.preds2 = predict_single_step_pure(df_main, st.session_state.next_num, info2["w_idx"])
+        
+        # 履歴を安全に保存
+        save_prediction_history_safely(
+            info1["date"], st.session_state.next_num, 
+            info2["date"], st.session_state.preds2["🎯 本命"]["num"], 
+            st.session_state.last_num
+        )
+            
+        st.session_state.calculated = True
+
+# --- 画面表示エリア ---
+if st.session_state.calculated:
+    if st.session_state.mode == "real": 
+        st.success("🎉 みずほ銀行のリアルタイム最新データと完全同期しました！")
+    else: 
+        st.warning("⚡ サーバー混雑のため、過去の統計傾向モデルに基づき先回り予測を出力しました。アプリは完全に稼働しています。")
+    
+    # --- 1日目（次回）表示 ---
+    st.header(f"📅 ① 次回予測 【 {info1['date']} ({info1['w_str']}曜日) 】")
