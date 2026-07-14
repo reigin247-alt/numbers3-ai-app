@@ -179,25 +179,24 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
                 "digit": str(target_digit), "dev": pattern_text, "proba": float(proba_val * 100)
             })
 
-    # [桁][順位]の構造からそれぞれの位の値を組み合わせて3桁の文字列にする
     predictions = {}
     types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
-        num_str = digit_candidates[0][rank]["digit"] + digit_candidates[1][rank]["digit"] + digit_candidates[2][rank]["digit"]
+        # 確実に各桁の文字列(str)を引っ張って結合
+        num_str = str(digit_candidates[0][rank]["digit"]) + str(digit_candidates[1][rank]["digit"]) + str(digit_candidates[2][rank]["digit"])
         avg_proba = (digit_candidates[0][rank]["proba"] + digit_candidates[1][rank]["proba"] + digit_candidates[2][rank]["proba"]) / 3
         dev_info = f"百:{digit_candidates[0][rank]['dev']} 十:{digit_candidates[1][rank]['dev']} 一:{digit_candidates[2][rank]['dev']}"
         predictions[types[rank]] = (num_str, avg_proba, dev_info)
     return predictions
 
-# --- 【新設】エラーを絶対に起こさない独立ログ書き込み命令 ---
+# --- 安全な独立ログ書き込み命令 ---
 def save_prediction_history_safely(date1, num1, date2, num2, last_num):
     try:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_text = f"=== AIダブル予測ログ : {now_str} ===\n"
         log_text += f"①次回 【{date1}】 ベース: {last_num} -> 本命:{num1}\n"
         log_text += f"②次々回【{date2}】 ベース: {num1} -> 本命:{num2}\n\n"
-        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
-            f.write(log_text)
+        open(HISTORY_FILE, "a", encoding="utf-8").write(log_text)
     except:
         pass
 
@@ -223,7 +222,9 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
         
+        # 【完全修正箇所】タプルから「3桁の数字文字列」だけをピンポイントで安全に抜き出す
         st.session_state.next_num = str(st.session_state.preds1["🎯 本命"][0])
+        
         dev_h = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
         dev_t = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
         dev_o = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
@@ -235,4 +236,4 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         df_extended = pd.concat([df_main, new_row], ignore_index=True)
         st.session_state.preds2 = predict_single_step_pure(df_extended, st.session_state.next_num, info2["w_idx"])
         
-        # 安全な独立関数を呼び出して履歴を保存（インデントエラーの原因を根絶）
+        # 安全な独立関数を呼び出して履歴を保存
