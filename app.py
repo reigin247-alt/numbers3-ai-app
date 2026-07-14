@@ -170,7 +170,7 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
         for p in ALL_PATTERNS:
             probabilities[p] = (counts[p] / total_matched if total_matched > 0 else 1.0 / 10.0)
             
-        sorted_patterns = sorted(probabilities.items(), key=lambda x: x[1], reverse=True)[:3]
+        sorted_patterns = sorted(probabilities.items(), key=lambda x: x, reverse=True)[:3]
         
         base_digit = base_number[i]
         for pattern_text, proba_val in sorted_patterns:
@@ -180,18 +180,19 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
             elif i == 1: tens_cand.append(item)
             elif i == 2: ones_cand.append(item)
 
-    # 完全にフラットな辞書形式（文字列）で本命・対抗・大穴をパッキング
-    predictions = {}
-    types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
+    # データを完全に安全な配列として抽出し、文字バグを根絶
+    predictions = []
     for rank in range(3):
         h = hundreds_cand[rank]
         t = tens_cand[rank]
         o = ones_cand[rank]
         
-        num_str = h["digit"] + t["digit"] + o["digit"]
+        num_str = str(h["digit"]) + str(t["digit"]) + str(o["digit"])
         avg_proba = (h["proba"] + t["proba"] + o["proba"]) / 3
         dev_info = f"百:{h['dev']} 十:{t['dev']} 一:{o['dev']}"
-        predictions[types[rank]] = {"num": num_str, "proba": avg_proba, "dev": dev_info}
+        
+        title = "🎯 本命" if rank == 0 else "⚔️ 対抗" if rank == 1 else "💎 大穴"
+        predictions.append({"title": title, "num": num_str, "proba": avg_proba, "dev": dev_info})
     return predictions
 
 # --- 安全な独立ログ書き込み命令 ---
@@ -213,8 +214,8 @@ if "calculated" not in st.session_state:
     st.session_state.calculated = False
     st.session_state.mode = ""
     st.session_state.last_num = ""
-    st.session_state.preds1 = None
-    st.session_state.preds2 = None
+    st.session_state.preds1 = []
+    st.session_state.preds2 = []
     st.session_state.next_num = ""
 
 if st.button("🚀 最新データを同期して2日分の予測を開始", type="primary", use_container_width=True):
@@ -226,22 +227,22 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
         
-        # 純粋な「3桁の数字文字列」だけを取り出して連動
-        st.session_state.next_num = st.session_state.preds1["🎯 本命"]["num"]
+        # 0番目(本命)の「num」キーから綺麗な3桁の数字を抜き出す
+        st.session_state.next_num = st.session_state.preds1[0]["num"]
         
-        # 2. 次々回（次の日）の予測を実行（クラッシュの原因だったdataframe結合処理を完全廃止）
+        # 2. 次々回（次の日）の予測を実行
         st.session_state.preds2 = predict_single_step_pure(df_main, st.session_state.next_num, info2["w_idx"])
         
         # 履歴を安全に保存
         save_prediction_history_safely(
             info1["date"], st.session_state.next_num, 
-            info2["date"], st.session_state.preds2["🎯 本命"]["num"], 
+            info2["date"], st.session_state.preds2[0]["num"], 
             st.session_state.last_num
         )
             
         st.session_state.calculated = True
 
-# --- 画面表示エリア ---
+# --- 画面表示エリア（縦並びレイアウトに変更） ---
 if st.session_state.calculated:
     if st.session_state.mode == "real": 
         st.success("🎉 みずほ銀行のリアルタイム最新データと完全同期しました！")
@@ -249,4 +250,3 @@ if st.session_state.calculated:
         st.warning("⚡ サーバー混雑のため、過去の統計傾向モデルに基づき先回り予測を出力しました。アプリは完全に稼働しています。")
     
     # --- 1日目（次回）表示 ---
-    st.header(f"📅 ① 次回予測 【 {info1['date']} ({info1['w_str']}曜日) 】")
