@@ -139,6 +139,27 @@ def scrape_mizuho_data():
         return "simulated"
 
 # --- ② 確率計算エンジン ---
+def prepare_ai_data(df, target_col, next_weekday_idx):
+    le = LabelEncoder()
+    all_patterns = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
+    le.fit(all_patterns)
+    
+    raw_series = df[target_col].astype(str).values
+    cleaned_series = [val if val in le.classes_ else "0" for val in raw_series]
+    encoded_list = le.transform(cleaned_series).tolist()
+            
+    weekdays = df["曜日"].values
+    
+    look_back = 3
+    X, y = [], []
+    for i in range(len(encoded_list) - look_back):
+        features = [int(encoded_list[i]), int(encoded_list[i+1]), int(encoded_list[i+2]), int(weekdays[i+3])]
+        X.append(features)
+        y.append(int(encoded_list[i+3]))
+        
+    latest_features = [int(encoded_list[-3]), int(encoded_list[-2]), int(encoded_list[-1]), int(next_weekday_idx)]
+    return np.array(X, dtype=np.int32), np.array(y, dtype=np.int32), le, np.array(latest_features, dtype=np.int32)
+
 def predict_single_step_pure(df, base_number, next_weekday_idx):
     columns = ["百の位_ずれ", "十の位_ずれ", "一の位_ずれ"]
     digit_candidates = [[], [], []]
@@ -179,12 +200,13 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
                 "digit": str(target_digit), "dev": pattern_text, "proba": float(proba_val * 100)
             })
 
+    # 【修正箇所】百の位(0)・十の位(1)・一の位(2)から、それぞれ本命(0)・対抗(1)・大穴(2)を正しくクロス抽出して合体
     predictions = {}
     types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
-        num_str = str(digit_candidates[rank]["digit"]) + str(digit_candidates[rank]["digit"]) + str(digit_candidates[rank]["digit"])
-        avg_proba = (digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"]) / 3
-        dev_info = f"百:{digit_candidates[rank]['dev']} 十:{digit_candidates[rank]['dev']} 一:{digit_candidates[rank]['dev']}"
+        num_str = digit_candidates[0][rank]["digit"] + digit_candidates[1][rank]["digit"] + digit_candidates[2][rank]["digit"]
+        avg_proba = (digit_candidates[0][rank]["proba"] + digit_candidates[1][rank]["proba"] + digit_candidates[2][rank]["proba"]) / 3
+        dev_info = f"百:{digit_candidates[0][rank]['dev']} 十:{digit_candidates[1][rank]['dev']} 一:{digit_candidates[2][rank]['dev']}"
         predictions[types[rank]] = (num_str, avg_proba, dev_info)
     return predictions
 
@@ -218,19 +240,3 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
-        
-        # 【修正箇所】1番目の要素（数字）だけを確実に取り出して1行で完結
-        st.session_state.next_num = str(st.session_state.preds1["🎯 本命"])
-        
-        dev_h = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
-        dev_t = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
-        dev_o = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
-        
-        new_row = pd.DataFrame([{
-            "前当選番号": st.session_state.last_num, "現当選番号": st.session_state.next_num, "曜日": info1["w_idx"],
-            "百の位_ずれ": dev_h, "十の位_ずれ": dev_t, "一の位_ずれ": dev_o
-        }])
-        df_extended = pd.concat([df_main, new_row], ignore_index=True)
-        st.session_state.preds2 = predict_single_step_pure(df_extended, st.session_state.next_num, info2["w_idx"])
-        
-        # カッコを確実に閉じて安全にログ書き込み
