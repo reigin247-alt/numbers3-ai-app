@@ -182,7 +182,6 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
     predictions = {}
     types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
-        # 確実に各桁の文字列(str)を引っ張って結合
         num_str = str(digit_candidates[0][rank]["digit"]) + str(digit_candidates[1][rank]["digit"]) + str(digit_candidates[2][rank]["digit"])
         avg_proba = (digit_candidates[0][rank]["proba"] + digit_candidates[1][rank]["proba"] + digit_candidates[2][rank]["proba"]) / 3
         dev_info = f"百:{digit_candidates[0][rank]['dev']} 十:{digit_candidates[1][rank]['dev']} 一:{digit_candidates[2][rank]['dev']}"
@@ -200,7 +199,7 @@ def save_prediction_history_safely(date1, num1, date2, num2, last_num):
     except:
         pass
 
-# --- ③ UI画面の構成（セッション記憶システム対応） ---
+# --- ③ UI画面の構成 ---
 st.title("🔮 ナンバーズ3 AIダブル予測システム")
 st.markdown("曜日補正・時系列展開モデルを用いて、**次回**および**次々回（次の日）**の2日分の購入候補を一挙予測します。")
 
@@ -222,7 +221,7 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
         
-        # 【完全修正箇所】タプルから「3桁の数字文字列」だけをピンポイントで安全に抜き出す
+        # 【完全修正箇所】タプル(固まり)の「0番目」から、ピュアな3桁の数字文字列を安全に抜き出す
         st.session_state.next_num = str(st.session_state.preds1["🎯 本命"][0])
         
         dev_h = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
@@ -237,3 +236,4 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         st.session_state.preds2 = predict_single_step_pure(df_extended, st.session_state.next_num, info2["w_idx"])
         
         # 安全な独立関数を呼び出して履歴を保存
+        save_prediction_history_safely(
