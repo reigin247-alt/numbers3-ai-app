@@ -20,7 +20,7 @@ def calculate_shortest_deviation(prev_num, curr_num):
     right_dist = (c - p) % 10
     if right_dist == 0: return "0"
     elif 1 <= right_dist <= 5: return f"右{right_dist}"
-    else: return f"左{10 - right_dist}"
+    else: return f"left{10 - right_dist}".replace("left", "左")
 
 def get_weekday_from_jp_date(date_text):
     weekdays = ["月", "火", "水", "木", "金"]
@@ -31,7 +31,7 @@ def get_weekday_from_jp_date(date_text):
 def convert_deviation_to_number(base_num, deviation_text):
     base = int(base_num)
     if deviation_text == "0": return base
-    direction = deviation_text
+    direction = deviation_text[0]
     val = int(deviation_text[1:])
     if direction == "右": return (base + val) % 10
     elif direction == "左": return (base - val) % 10
@@ -139,30 +139,12 @@ def scrape_mizuho_data():
         return "simulated"
 
 # --- ② 確率計算エンジン ---
-def prepare_ai_data(df, target_col, next_weekday_idx):
-    le = LabelEncoder()
-    all_patterns = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
-    le.fit(all_patterns)
-    
-    raw_series = df[target_col].astype(str).values
-    cleaned_series = [val if val in le.classes_ else "0" for val in raw_series]
-    encoded_list = le.transform(cleaned_series).tolist()
-            
-    weekdays = df["曜日"].values
-    
-    look_back = 3
-    X, y = [], []
-    for i in range(len(encoded_list) - look_back):
-        features = [int(encoded_list[i]), int(encoded_list[i+1]), int(encoded_list[i+2]), int(weekdays[i+3])]
-        X.append(features)
-        y.append(int(encoded_list[i+3]))
-        
-    latest_features = [int(encoded_list[-3]), int(encoded_list[-2]), int(encoded_list[-1]), int(next_weekday_idx)]
-    return np.array(X, dtype=np.int32), np.array(y, dtype=np.int32), le, np.array(latest_features, dtype=np.int32)
-
 def predict_single_step_pure(df, base_number, next_weekday_idx):
     columns = ["百の位_ずれ", "十の位_ずれ", "一の位_ずれ"]
-    digit_candidates = [[], [], []]
+    # 各桁の上位3候補を格納する独立したリスト
+    hundreds_cand = []
+    tens_cand = []
+    ones_cand = []
     
     for i, col in enumerate(columns):
         series = df[col].astype(str).values.tolist()
@@ -196,17 +178,22 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
         base_digit = base_number[i]
         for pattern_text, proba_val in sorted_patterns:
             target_digit = convert_deviation_to_number(base_digit, pattern_text)
-            digit_candidates[i].append({
-                "digit": str(target_digit), "dev": pattern_text, "proba": float(proba_val * 100)
-            })
+            item = {"digit": str(target_digit), "dev": pattern_text, "proba": float(proba_val * 100)}
+            if i == 0: hundreds_cand.append(item)
+            elif i == 1: tens_cand.append(item)
+            elif i == 2: ones_cand.append(item)
 
-    # 【修正箇所】百の位(0)・十の位(1)・一の位(2)から、それぞれ本命(0)・対抗(1)・大穴(2)を正しくクロス抽出して合体
+    # 【バグの完全修正箇所】百、十、一の位のデータを1マスずつ安全にクロス結合
     predictions = {}
     types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
-        num_str = digit_candidates[0][rank]["digit"] + digit_candidates[1][rank]["digit"] + digit_candidates[2][rank]["digit"]
-        avg_proba = (digit_candidates[0][rank]["proba"] + digit_candidates[1][rank]["proba"] + digit_candidates[2][rank]["proba"]) / 3
-        dev_info = f"百:{digit_candidates[0][rank]['dev']} 十:{digit_candidates[1][rank]['dev']} 一:{digit_candidates[2][rank]['dev']}"
+        h_item = hundreds_cand[rank]
+        t_item = tens_cand[rank]
+        o_item = ones_cand[rank]
+        
+        num_str = h_item["digit"] + t_item["digit"] + o_item["digit"]
+        avg_proba = (h_item["proba"] + t_item["proba"] + o_item["proba"]) / 3
+        dev_info = f"百:{h_item['dev']} 十:{t_item['dev']} 一:{o_item['dev']}"
         predictions[types[rank]] = (num_str, avg_proba, dev_info)
     return predictions
 
@@ -219,7 +206,7 @@ def save_prediction_history_safely(date1, num1, date2, num2, last_num):
     except:
         pass
 
-# --- ③ UI画面の構成 ---
+# --- ③ UI画面の構成（セッション記憶システム対応） ---
 st.title("🔮 ナンバーズ3 AIダブル予測システム")
 st.markdown("曜日補正・時系列展開モデルを用いて、**次回**および**次々回（次の日）**の2日分の購入候補を一挙予測します。")
 
@@ -240,3 +227,16 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
+        
+        # 予測データ（タプルの0番目）から、純粋な3桁の数字文字列だけを確実に抜き出す
+        st.session_state.next_num = str(st.session_state.preds1["🎯 本命"])
+        
+        dev_h = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
+        dev_t = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
+        dev_o = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
+        
+        new_row = pd.DataFrame([{
+            "前当選番号": st.session_state.last_num, "現当選番号": st.session_state.next_num, "曜日": info1["w_idx"],
+            "百の位_ずれ": dev_h, "十の位_ずれ": dev_t, "一の位_ずれ": dev_o
+        }])
+        df_extended = pd.concat([df_main, new_row], ignore_index=True)
