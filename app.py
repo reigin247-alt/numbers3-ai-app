@@ -5,7 +5,7 @@ from lightgbm import LGBMClassifier
 from sklearn.preprocessing import LabelEncoder
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
 
@@ -36,7 +36,25 @@ def convert_deviation_to_number(base_num, deviation_text):
     elif direction == "左": return (base - val) % 10
     return base
 
-# --- ① データ取得（完全防衛モード搭載） ---
+def get_next_lottery_info():
+    """次回の抽選日と曜日を算出する"""
+    now = datetime.now()
+    target_date = now
+    
+    # 抽選は平日(月〜金)のみ。土日の場合は次の月曜日に設定
+    # 当日の19時以降（抽選後）であれば翌日以降の平日にターゲットを進める
+    if now.hour >= 19:
+        target_date += timedelta(days=1)
+        
+    while target_date.weekday() >= 5: # 5:土, 6:日
+        target_date += timedelta(days=1)
+        
+    weekday_labels = ["月", "火", "水", "木", "金"]
+    date_str = target_date.strftime("%m月%d日")
+    w_str = weekday_labels[target_date.weekday()]
+    return date_str, w_str, target_date.weekday()
+
+# --- ① データ取得（最新の本物ベースフォールバック搭載） ---
 def scrape_mizuho_data():
     current_date = datetime.now()
     year, month = current_date.year, current_date.month
@@ -98,10 +116,22 @@ def scrape_mizuho_data():
         pd.DataFrame(data_list).to_csv(CSV_FILE, index=False, encoding="utf-8")
         return "real"
         
-    # ブロックされた場合は、すべてのズレパターン（右・左・0）を含む本物そっくりの模擬データベースを作る
+    # ブロックされた場合は、手元にある直近のCSVの最終行（直近の本物の番号）をベースに模擬データを生成
     else:
+        last_base_num = "549" # デフォルト値
+        if os.path.exists(CSV_FILE):
+            try:
+                old_df = pd.read_csv(CSV_FILE, encoding="utf-8")
+                if len(old_df) > 0:
+                    last_base_num = str(old_df.iloc[-1]["現当選番号"]).zfill(3)
+            except:
+                pass
+                
         np.random.seed(int(time.time()))
         simulated_nums = [f"{np.random.randint(0,10)}{np.random.randint(0,10)}{np.random.randint(0,10)}" for _ in range(105)]
+        # 最後の1個を現在の最新番号に強制固定することで、予測の起点を現実に合わせる
+        simulated_nums[100] = last_base_num
+        
         data_list = []
         for i in range(101):
             prev, curr = simulated_nums[i], simulated_nums[i+1]
@@ -116,12 +146,12 @@ def scrape_mizuho_data():
         return "simulated"
 
 # --- ② AI予測・保存機能 ---
-def prepare_ai_data(df, target_col):
+def prepare_ai_data(df, target_col, next_weekday_idx):
     le = LabelEncoder()
     all_patterns = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
     le.fit(all_patterns)
     
-    encoded_series = df[target_col].apply(lambda x: le.transform([x])[0] if x in le.classes_ else le.transform(["0"])[0]).values
+    encoded_series = df[target_col].apply(lambda x: le.transform([x]) if x in le.classes_ else le.transform(["0"])).values
     weekdays = df["曜日"].values
     
     look_back = 3
@@ -131,31 +161,26 @@ def prepare_ai_data(df, target_col):
         X.append(features)
         y.append(encoded_series[i + look_back])
         
-    next_weekday = (datetime.now().weekday()) % 5
-    latest_features = list(encoded_series[-look_back:]) + [next_weekday]
-    return np.array(X), np.array(y), le, np.array(latest_features), next_weekday
+    latest_features = list(encoded_series[-look_back:]) + [next_weekday_idx]
+    return np.array(X), np.array(y), le, np.array(latest_features)
 
-def run_prediction(mode_text):
+def run_prediction(mode_text, next_date_str, next_w_str, next_w_idx):
     df = pd.read_csv(CSV_FILE, encoding="utf-8")
     last_actual_number = str(df.iloc[-1]["現当選番号"]).zfill(3)
     columns = ["百の位_ずれ", "十の位_ずれ", "一の位_ずれ"]
-    weekday_labels = ["月", "火", "水", "木", "金"]
     
     digit_candidates = [[], [], []]
-    next_w = 0
     
     for i, col in enumerate(columns):
-        X, y, le, latest_features, next_w = prepare_ai_data(df, col)
+        X, y, le, latest_features = prepare_ai_data(df, col, next_w_idx)
         model = LGBMClassifier(n_estimators=50, random_state=42, verbose=-1)
         model.fit(X, y)
         
-        pred_proba = model.predict_proba(latest_features.reshape(1, -1))[0]
-        # 確率が高い順にインデックスを並び替え
+        pred_proba = model.predict_proba(latest_features.reshape(1, -1))
         top3_indices = np.argsort(pred_proba)[::-1][:3]
         
         base_digit = last_actual_number[i]
         for idx in top3_indices:
-            # 【修正箇所】numpyの一次元配列にしてからデコードを明示
             pattern_text = le.inverse_transform(np.array([idx]))[0]
             probability = pred_proba[idx] * 100
             target_digit = convert_deviation_to_number(base_digit, pattern_text)
@@ -170,30 +195,33 @@ def run_prediction(mode_text):
         predictions[types[rank]] = (num_str, avg_proba, dev_info)
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_text = f"=== AI予測日時 : {now_str} ({mode_text}モード) ===\n対象曜日: {weekday_labels[next_w]}曜日 / 前回番号: {last_actual_number}\n"
+    log_text = f"=== AI予測日時 : {now_str} ({mode_text}モード) ===\n対象次回抽選日: {next_date_str}({next_w_str}) / 直前ベース番号: {last_actual_number}\n"
     for title, (num, proba, dev) in predictions.items():
         log_text += f" {title} -> 【 {num} 】 (信頼度: {proba:.1f}% / {dev})\n"
     log_text += "\n"
     with open(HISTORY_FILE, "a", encoding="utf-8") as f: f.write(log_text)
     
-    return last_actual_number, weekday_labels[next_w], predictions
+    return last_actual_number, predictions
 
 # --- ③ UI画面の構成 ---
 st.title("🔮 ナンバーズ3 AI予測システム")
 st.markdown("みずほ銀行の公式サイトから最新データを巡回し、曜日・時系列補正をかけたLightGBMモデルで上位3つの候補を自動計算します。")
 
+# 次回のターゲット抽選日情報をあらかじめ取得
+next_date_str, next_w_str, next_w_idx = get_next_lottery_info()
+
 if st.button("🚀 最新データを取得してAI予測を開始", type="primary", use_container_width=True):
     with st.spinner("データの同期・AI解析を実行中..."):
         mode = scrape_mizuho_data()
-        last_num, next_day, preds = run_prediction(mode)
+        last_num, preds = run_prediction(mode, next_date_str, next_w_str, next_w_idx)
         
     if mode == "real":
         st.success("🎉 【リアルタイム同期成功】みずほ銀行の最新データに基づきAI分析を完了しました！")
     else:
         st.warning("⚡ 【シミュレーションモード起動】みずほ銀行サーバー混雑（ブロック）のため、過去の統計傾向モデルに基づきAI予測を出力しました。アプリは正常に稼働しています。")
         
-    st.subheader(f"📊 予測シミュレーション結果（次回【{next_day}曜日】分）")
-    st.info(f"💡 前回（ベース）の番号: **{last_num}**")
+    st.subheader(f"📊 次回【 {next_date_str} ({next_w_str}曜日) 】のAI予想結果")
+    st.info(f"💡 分析の起点となった直前の当選番号: **{last_num}**")
     
     col1, col2, col3 = st.columns(3)
     for i, (title, (num, proba, dev)) in enumerate(preds.items()):
