@@ -71,7 +71,7 @@ def scrape_mizuho_data():
         for step in range(12):
             status_text.text(f"🌐 みずほ銀行公式HP: {year}年{month}月のデータを解析中...")
             progress_bar.progress(int((step + 1) / 12 * 100))
-            url = f"https://www.mizuhobank.co.jp/takarakuji/check/numbers/numbers3/index.html?year={year}&month={month}"
+            url = f"https://mizuhobank.co.jp{year}&month={month}"
             response = requests.get(url, headers=headers, timeout=5)
             response.encoding = 'shift_jis'
             
@@ -169,7 +169,7 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
         for p in ALL_PATTERNS:
             probabilities[p] = (counts[p] / total_matched if total_matched > 0 else 1.0 / 10.0)
             
-        sorted_patterns = sorted(probabilities.items(), key=lambda x: x, reverse=True)[:3]
+        sorted_patterns = sorted(probabilities.items(), key=lambda x: x[1], reverse=True)[:3]
         
         base_digit = base_number[i]
         for pattern_text, proba_val in sorted_patterns:
@@ -181,9 +181,9 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
     predictions = {}
     types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
-        num_str = digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"]
-        avg_proba = (digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"]) / 3
-        dev_info = f"百:{digit_candidates[rank]['dev']} 十:{digit_candidates[rank]['dev']} 一:{digit_candidates[rank]['dev']}"
+        num_str = digit_candidates[0][rank]["digit"] + digit_candidates[1][rank]["digit"] + digit_candidates[2][rank]["digit"]
+        avg_proba = (digit_candidates[0][rank]["proba"] + digit_candidates[1][rank]["proba"] + digit_candidates[2][rank]["proba"]) / 3
+        dev_info = f"百:{digit_candidates[0][rank]['dev']} 十:{digit_candidates[1][rank]['dev']} 一:{digit_candidates[2][rank]['dev']}"
         predictions[types[rank]] = (num_str, avg_proba, dev_info)
     return predictions
 
@@ -193,7 +193,6 @@ st.markdown("曜日補正・時系列展開モデルを用いて、**次回**お
 
 info1, info2 = get_two_lottery_info()
 
-# アプリ起動時に記憶エリア（State）を初期化
 if "calculated" not in st.session_state:
     st.session_state.calculated = False
     st.session_state.mode = ""
@@ -202,7 +201,6 @@ if "calculated" not in st.session_state:
     st.session_state.preds2 = None
     st.session_state.next_num = ""
 
-# ボタンを押した時の処理（記憶エリアへの書き込みだけを行う）
 if st.button("🚀 最新データを同期して2日分の予測を開始", type="primary", use_container_width=True):
     with st.spinner("統計確率モデルをロード・連続解析中..."):
         st.session_state.mode = scrape_mizuho_data()
@@ -211,7 +209,7 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
         
-        st.session_state.next_num = st.session_state.preds1["🎯 本命"]
+        st.session_state.next_num = st.session_state.preds1["🎯 本命"][0]
         dev_h = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
         dev_t = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
         dev_o = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
@@ -228,4 +226,4 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             log_text = f"=== AIダブル予測ログ : {now_str} ===\n"
             log_text += f"①次回 【{info1['date']}】 ベース: {st.session_state.last_num} -> 本命:{st.session_state.preds1['🎯 本命']} / 対抗:{st.session_state.preds1['⚔️ 対抗']} / 大穴:{st.session_state.preds1['💎 大穴']}\n"
-            log_text += f"②次々回【{info2['date']}】 ベース: {st.session_state.next_num} -> 本命:{st.session_state.preds2['🎯 本命']} / 対抗:{st.session_state.preds2['⚔️ 对抗']} / 大穴:{st.session_state.preds2['💎 大穴']}\n\n"
+            log_text += f"②次々回【{info2['date']}】 ベース: {st.session_state.next_num} -> 本命:{st.session_state.preds2['🎯 本命']} / 対抗:{st.session_state.preds2['⚔️ 対抗']} / 大穴:{st.session_state.preds2['💎 大穴']}\n\n"
