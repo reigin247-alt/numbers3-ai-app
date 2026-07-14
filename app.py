@@ -30,7 +30,7 @@ def get_weekday_from_jp_date(date_text):
 def convert_deviation_to_number(base_num, deviation_text):
     base = int(base_num)
     if deviation_text == "0": return base
-    direction = deviation_text
+    direction = deviation_text[0]
     val = int(deviation_text[1:])
     if direction == "右": return (base + val) % 10
     elif direction == "左": return (base - val) % 10
@@ -146,13 +146,11 @@ def prepare_ai_data(df, target_col, next_weekday_idx):
     all_patterns = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
     le.fit(all_patterns)
     
-    raw_series = df[target_col].values
-    encoded_list = []
-    for val in raw_series:
-        if val in le.classes_:
-            encoded_list.append(int(le.transform([val])))
-        else:
-            encoded_list.append(int(le.transform(["0"])))
+    # 【修正箇所】データフレームのシリーズ全体を安全に一括エンコード
+    raw_series = df[target_col].astype(str).values
+    # 未知のラベル（万が一のためのエラー回避）を防ぐため、classes_に含まれるものだけに絞って安全に変換
+    cleaned_series = [val if val in le.classes_ else "0" for val in raw_series]
+    encoded_list = le.transform(cleaned_series).tolist()
             
     weekdays = df["曜日"].values
     
@@ -175,19 +173,18 @@ def predict_single_step(df, base_number, weekday_idx):
         model = LGBMClassifier(n_estimators=50, random_state=42, verbose=-1)
         model.fit(X, y)
         
-        pred_proba = model.predict_proba(latest_features.reshape(1, -1))
+        pred_proba = model.predict_proba(latest_features.reshape(1, -1))[0]
         top3_classes_indices = np.argsort(pred_proba)[::-1][:3]
         
         base_digit = base_number[i]
         for idx_in_proba in top3_classes_indices:
             actual_class_index = model.classes_[idx_in_proba]
-            pattern_text = le.inverse_transform(np.array([actual_class_index]))[0]
+            pattern_text = str(le.inverse_transform(np.array([actual_class_index]))[0])
             probability = pred_proba[idx_in_proba] * 100
             
             target_digit = convert_deviation_to_number(base_digit, pattern_text)
             digit_candidates[i].append({"digit": str(target_digit), "dev": pattern_text, "proba": probability})
 
-    # 【修正箇所】各桁(0, 1, 2)から該当順位の数字を安全に結合するよう変更
     predictions = {}
     types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
@@ -225,7 +222,7 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         preds_1 = predict_single_step(df_main, last_actual_number, info1["w_idx"])
         
         # 2. 次々回（次の日）の予測を実行
-        next_assumed_num = preds_1["🎯 本命"][0] # 文字列として取得
+        next_assumed_num = preds_1["🎯 本命"][0]
         dev_h = calculate_shortest_deviation(last_actual_number, next_assumed_num)
         dev_t = calculate_shortest_deviation(last_actual_number, next_assumed_num)
         dev_o = calculate_shortest_deviation(last_actual_number, next_assumed_num)
