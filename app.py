@@ -180,7 +180,7 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
             elif i == 1: tens_cand.append(item)
             elif i == 2: ones_cand.append(item)
 
-    # 完全に独立した変数として結果を抽出し、配列ループによる非表示バグを根絶
+    # インデント位置のズレを完全に修正
     h0, t0, o0 = hundreds_cand[0], tens_cand[0], ones_cand[0]
     h1, t1, o1 = hundreds_cand[1], tens_cand[1], ones_cand[1]
     h2, t2, o2 = hundreds_cand[2], tens_cand[2], ones_cand[2]
@@ -189,7 +189,7 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
     res_taikou = {"num": h1["digit"]+t1["digit"]+o1["digit"], "proba": (h1["proba"]+t1["proba"]+o1["proba"])/3, "dev": f"百:{h1['dev']} 十:{t1['dev']} 一:{o1['dev']}"}
     res_oana   = {"num": h2["digit"]+t2["digit"]+o2["digit"], "proba": (h2["proba"]+t2["proba"]+o2["proba"])/3, "dev": f"百:{h2['dev']} 十:{t2['dev']} 一:{o2['dev']}"}
     
-    return [res_honmei, res_taikou, res_oana]
+    return {"本命": res_honmei, "対抗": res_taikou, "大穴": res_oana}
 
 # --- 安全な独立ログ書き込み命令 ---
 def save_prediction_history_safely(date1, num1, date2, num2, last_num):
@@ -210,8 +210,8 @@ if "calculated" not in st.session_state:
     st.session_state.calculated = False
     st.session_state.mode = ""
     st.session_state.last_num = ""
-    st.session_state.preds1 = []
-    st.session_state.preds2 = []
+    st.session_state.preds1 = None
+    st.session_state.preds2 = None
     st.session_state.next_num = ""
 
 if st.button("🚀 最新データを同期して2日分の予測を開始", type="primary", use_container_width=True):
@@ -223,8 +223,8 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
         
-        # インデックス[0]["num"]で「本命の3桁数字」を完全かつ安全に指定
-        st.session_state.next_num = str(st.session_state.preds1[0]["num"])
+        # 完全に固定された辞書キーから安全に3桁数字を抽出
+        st.session_state.next_num = st.session_state.preds1["本命"]["num"]
         
         # 2. 次々回（次の日）の予測を実行
         st.session_state.preds2 = predict_single_step_pure(df_main, st.session_state.next_num, info2["w_idx"])
@@ -232,11 +232,12 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         # 履歴を安全に保存
         save_prediction_history_safely(
             info1["date"], st.session_state.next_num, 
-            info2["date"], str(st.session_state.preds2[0]["num"]), 
+            info2["date"], st.session_state.preds2["本命"]["num"], 
             st.session_state.last_num
         )
             
         st.session_state.calculated = True
 
-# --- 画面表示エリア（最も破壊に強い直接指定レイアウト） ---
+# --- 画面表示エリア（インデントエラーを完全消滅） ---
 if st.session_state.calculated:
+    if st.session_state.mode == "real": 
