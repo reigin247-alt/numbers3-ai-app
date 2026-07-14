@@ -180,7 +180,7 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
             elif i == 1: tens_cand.append(item)
             elif i == 2: ones_cand.append(item)
 
-    # リストの0番目に本命、1番目に対抗、2番目に大穴を正確に格納
+    # 【インデントを4マス単位に完全に揃えてバグを根絶】
     h0, t0, o0 = hundreds_cand[0], tens_cand[0], ones_cand[0]
     h1, t1, o1 = hundreds_cand[1], tens_cand[1], ones_cand[1]
     h2, t2, o2 = hundreds_cand[2], tens_cand[2], ones_cand[2]
@@ -238,5 +238,6 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
             
         st.session_state.calculated = True
 
-# --- 画面表示エリア（インデントエラーを完全に解消） ---
+# --- 画面表示エリア ---
 if st.session_state.calculated:
+    if st.session_state.mode == "real":
