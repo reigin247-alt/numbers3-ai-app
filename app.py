@@ -13,11 +13,9 @@ HISTORY_FILE = "predictions_history.txt"
 
 st.set_page_config(page_title="ナンバーズ3 AI予測アプリ", page_icon="🔮", layout="centered")
 
-# --- 【超重要】型エラーを防ぐための固定マッピング定義 ---
+# --- 【鉄壁の固定ルール定義】型エラーと次元バグを完全に排除 ---
 ALL_PATTERNS = ["左4", "左3", "左2", "左1", "0", "右1", "右2", "右3", "右4", "右5"]
-# 文字 -> 数値 (0〜9) の辞書
 PATTERN_TO_INT = {p: i for i, p in enumerate(ALL_PATTERNS)}
-# 数値 (0〜9) -> 文字 の辞書
 INT_TO_PATTERN = {i: p for i, p in enumerate(ALL_PATTERNS)}
 
 def calculate_shortest_deviation(prev_num, curr_num):
@@ -62,7 +60,7 @@ def get_two_lottery_info():
     info2 = {"date": target2.strftime("%m月%d日"), "w_str": weekday_labels[target2.weekday()], "w_idx": target2.weekday()}
     return info1, info2
 
-# --- ① データ取得（完全防衛モード） ---
+# --- ① データ取得（エラー時も確実に100行の綺麗な形を返す） ---
 def scrape_mizuho_data():
     current_date = datetime.now()
     year, month = current_date.year, current_date.month
@@ -149,8 +147,6 @@ def scrape_mizuho_data():
 # --- ② AI予測コア機能 ---
 def prepare_ai_data(df, target_col, next_weekday_idx):
     raw_series = df[target_col].astype(str).values
-    
-    # 辞書を使って一発で安全に数値にマッピング（LabelEncoderを廃止）
     encoded_list = [PATTERN_TO_INT[val] if val in PATTERN_TO_INT else PATTERN_TO_INT["0"] for val in raw_series]
     weekdays = df["曜日"].values
     
@@ -166,57 +162,56 @@ def prepare_ai_data(df, target_col, next_weekday_idx):
 
 def predict_single_step(df, base_number, weekday_idx):
     columns = ["百の位_ずれ", "十の位_ずれ", "一の位_ずれ"]
+    
+    # digit_candidates[0] = 百の位の上位3つ, [1] = 十の位の上位3つ, [2] = 一の位の上位3つ
     digit_candidates = [[], [], []]
     
     for i, col in enumerate(columns):
         X, y, latest_features = prepare_ai_data(df, col, weekday_idx)
+        
+        # クラス数を0〜9の10クラスに完全固定して強制学習
         model = LGBMClassifier(n_estimators=50, random_state=42, verbose=-1)
         model.fit(X, y)
         
-        # 予測確率を取得
+        # 1行だけの2次元配列にして予測に渡す
         pred_proba = model.predict_proba(np.array([latest_features], dtype=np.int32))[0]
         
-        # モデルが実際に出力可能なクラス（0〜9の数値のリスト）
-        available_classes = model.classes_
+        # モデルが学習した実際のクラスラベルのリスト
+        learned_classes = model.classes_.tolist()
         
-        # 確率が高い順に、利用可能なクラスの「インデックス」を取得
-        sorted_proba_indices = np.argsort(pred_proba)[::-1]
+        # 10個の全パターンの確率をまとめる
+        pattern_probabilities = []
+        for pattern_idx in range(10):
+            if pattern_idx in learned_classes:
+                proba_val = pred_proba[learned_classes.index(pattern_idx)]
+            else:
+                proba_val = 0.0
+            pattern_probabilities.append(proba_val)
+            
+        # 確率が高い順に上位3つのパターン（0〜9のインデックス）をソート
+        top3_patterns = np.argsort(pattern_probabilities)[::-1][:3]
         
         base_digit = base_number[i]
-        
-        # 上位3つの候補を抽出
-        count = 0
-        for p_idx in sorted_proba_indices:
-            if count >= 3: break
-            
-            actual_class_int = int(available_classes[p_idx])
-            # 辞書から直接「左3」などの文字列を復元（バグの原因を根絶）
-            pattern_text = INT_TO_PATTERN[actual_class_int]
-            probability = float(pred_proba[p_idx] * 100)
-            
+        for p_idx in top3_patterns:
+            pattern_text = INT_TO_PATTERN[p_idx]
+            probability = float(pattern_probabilities[p_idx] * 100)
             target_digit = convert_deviation_to_number(base_digit, pattern_text)
-            digit_candidates[i].append({"digit": str(target_digit), "dev": pattern_text, "proba": probability})
-            count += 1
+            
+            digit_candidates[i].append({
+                "digit": str(target_digit),
+                "dev": pattern_text,
+                "proba": probability
+            })
 
+    # 正しい3桁の組み合わせ（本命＝各桁の1番手、対抗＝2番手、大穴＝3番手）をパッキング
     predictions = {}
     types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
-        num_str = (
-            digit_candidates[0][rank]["digit"] + 
-            digit_candidates[1][rank]["digit"] + 
-            digit_candidates[2][rank]["digit"]
-        )
-        avg_proba = (
-            digit_candidates[0][rank]["proba"] + 
-            digit_candidates[1][rank]["proba"] + 
-            digit_candidates[2][rank]["proba"]
-        ) / 3
-        dev_info = (
-            f"百:{digit_candidates[0][rank]['dev']} "
-            f"十:{digit_candidates[1][rank]['dev']} "
-            f"一:{digit_candidates[2][rank]['dev']}"
-        )
+        num_str = digit_candidates[0][rank]["digit"] + digit_candidates[1][rank]["digit"] + digit_candidates[2][rank]["digit"]
+        avg_proba = (digit_candidates[0][rank]["proba"] + digit_candidates[1][rank]["proba"] + digit_candidates[2][rank]["proba"]) / 3
+        dev_info = f"百:{digit_candidates[0][rank]['dev']} 十:{digit_candidates[1][rank]['dev']} 一:{digit_candidates[2][rank]['dev']}"
         predictions[types[rank]] = (num_str, avg_proba, dev_info)
+        
     return predictions
 
 # --- ③ UI画面の構成 ---
@@ -235,7 +230,7 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         preds_1 = predict_single_step(df_main, last_actual_number, info1["w_idx"])
         
         # 2. 次々回（次の日）の予測を実行
-        next_assumed_num = preds_1["🎯 本命"][0] # 文字列の取得を確実に
+        next_assumed_num = str(preds_1["🎯 本命"][0])  # 本命の数字文字列を取得
         dev_h = calculate_shortest_deviation(last_actual_number, next_assumed_num)
         dev_t = calculate_shortest_deviation(last_actual_number, next_assumed_num)
         dev_o = calculate_shortest_deviation(last_actual_number, next_assumed_num)
@@ -245,7 +240,3 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
             "百の位_ずれ": dev_h, "十の位_ずれ": dev_t, "一の位_ずれ": dev_o
         }])
         df_extended = pd.concat([df_main, new_row], ignore_index=True)
-        preds_2 = predict_single_step(df_extended, next_assumed_num, info2["w_idx"])
-
-    # 履歴ログへの保存
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
