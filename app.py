@@ -179,13 +179,12 @@ def predict_single_step_pure(df, base_number, next_weekday_idx):
                 "digit": str(target_digit), "dev": pattern_text, "proba": float(proba_val * 100)
             })
 
-    # 【配列結合バグを完全解消】百(0)・十(1)・一(2)の各桁から、同じ順位(rank)を引っ張って合体
     predictions = {}
     types = ["🎯 本命", "⚔️ 対抗", "💎 大穴"]
     for rank in range(3):
-        num_str = digit_candidates[0][rank]["digit"] + digit_candidates[1][rank]["digit"] + digit_candidates[2][rank]["digit"]
-        avg_proba = (digit_candidates[0][rank]["proba"] + digit_candidates[1][rank]["proba"] + digit_candidates[2][rank]["proba"]) / 3
-        dev_info = f"百:{digit_candidates[0][rank]['dev']} 十:{digit_candidates[1][rank]['dev']} 一:{digit_candidates[2][rank]['dev']}"
+        num_str = digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"] + digit_candidates[rank]["digit"]
+        avg_proba = (digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"] + digit_candidates[rank]["proba"]) / 3
+        dev_info = f"百:{digit_candidates[rank]['dev']} 十:{digit_candidates[rank]['dev']} 一:{digit_candidates[rank]['dev']}"
         predictions[types[rank]] = (num_str, avg_proba, dev_info)
     return predictions
 
@@ -211,8 +210,7 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         st.session_state.last_num = str(df_main.iloc[-1]["現当選番号"]).zfill(3)
         st.session_state.preds1 = predict_single_step_pure(df_main, st.session_state.last_num, info1["w_idx"])
         
-        # 1つ目の要素の「数字」のみを引き出すよう安全に指定
-        st.session_state.next_num = st.session_state.preds1["🎯 本命"][0]
+        st.session_state.next_num = st.session_state.preds1["🎯 本命"]
         dev_h = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
         dev_t = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
         dev_o = calculate_shortest_deviation(st.session_state.last_num, st.session_state.next_num)
@@ -224,6 +222,10 @@ if st.button("🚀 最新データを同期して2日分の予測を開始", typ
         df_extended = pd.concat([df_main, new_row], ignore_index=True)
         st.session_state.preds2 = predict_single_step_pure(df_extended, st.session_state.next_num, info2["w_idx"])
         
-        # 1行で安全にログを追記
+        # 【インデントの位置を完全に修正】
         try:
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_text = f"=== AIダブル予測ログ : {now_str} ===\n①次回 【{info1['date']}】 ベース: {st.session_state.last_num} -> 本命:{st.session_state.preds1['🎯 本命']} / 対抗:{st.session_state.preds1['⚔️ 対抗']} / 大穴:{st.session_state.preds1['💎 大穴']}\n②次々回【{info2['date']}】 ベース: {st.session_state.next_num} -> 本命:{st.session_state.preds2['🎯 本命']} / 対抗:{st.session_state.preds2['⚔️ 対抗']} / 大穴:{st.session_state.preds2['💎 大穴']}\n\n"
+            open(HISTORY_FILE, "a", encoding="utf-8").write(log_text)
+        except:
+            pass
